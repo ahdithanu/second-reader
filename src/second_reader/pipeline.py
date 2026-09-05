@@ -139,9 +139,117 @@ def grade_all(con, client, items: list[Item], rubric, thresholds, mock: bool,
     return n_done
 
 
+def verify_all(con, client, items: list[Item], rubric, thresholds, mock: bool) -> int:
+    """Run the adversarial-verifier arm on top of completed agent grades."""
+    import json as _json
+
+    from .schemas import GraderOutput
+    from .verifier import combine, run_verifier
+
+    subs = {s.item_id: s for s in submissions.get_submissions(con)}
+    tasks = []
+    for order_label in ("original", "swapped"):
+        done = graded_ids(con, order_label, "verifier", rubric.version)
+        for it in items:
+            if it.item_id in done:
+                continue
+            row = con.execute(
+                "SELECT dimension_scores, verdict, confidence, reason, escalated "
+                "FROM grades WHERE item_id=? AND order_label=? AND mode='agent' AND rubric_version=?",
+                [it.item_id, order_label, rubric.version],
+            ).fetchone()
+            if row is None:
+                fail("verify", f"item_id={it.item_id} order={order_label} has no agent grade; "
+                               "run the agent arm first (--tools on or all)")
+            tasks.append((it, subs[it.item_id], order_label, row))
+    if not tasks:
+        return 0
+
+    lock = threading.Lock()
+
+    def worker(task):
+        it, sub, order_label, (dims, verdict, conf, reason, escalated) = task
+        if escalated:
+            return "inherited", None, None
+        grader_out = GraderOutput(
+            dimension_scores=_json.loads(dims), verdict=verdict,
+            confidence=conf, reason=reason,
+        )
+        g_item, g_sub = (it, sub)
+        if order_label == "swapped":
+            g_item, g_sub = swapped_view(it, sub)
+        with lock:
+            cur = con.cursor()
+        try:
+            review, res = run_verifier(client, cur, g_item, g_sub, rubric,
+                                       thresholds, order_label == "swapped", grader_out)
+        finally:
+            cur.close()
+        return "reviewed", grader_out, (review, res)
+
+    workers = 1 if mock else GRADE_WORKERS
+    n_done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(worker, t): t for t in tasks}
+        for fut in as_completed(futures):
+            it, sub, order_label, agent_row = futures[fut]
+            try:
+                kind, grader_out, payload = fut.result()
+            except GraderError as e:
+                ex.shutdown(cancel_futures=True)
+                fail("verify", str(e))
+            except Exception as e:  # noqa: BLE001
+                ex.shutdown(cancel_futures=True)
+                fail("verify", f"item_id={it.item_id} order={order_label}: "
+                               f"{type(e).__name__}: {e}")
+            if kind == "inherited":
+                # Grader escalated: nothing to verify; the arm inherits it.
+                save_grade(con, it.item_id, order_label, "verifier", rubric.version,
+                           None, True, agent_row[3], False)
+                save_trace(con, it.item_id, order_label, "verifier", rubric.version,
+                           [{"type": "inherited_escalation", "reason": agent_row[3]}],
+                           0, False, True, 0, 0, 0.0)
+            else:
+                review, res = payload
+                for i, rnd in enumerate(res.rounds, start=1):
+                    log_call(con, it.item_id, "grade", "verifier", order_label,
+                             rubric.version, thresholds.model, mock,
+                             CallStats(tokens_in=rnd["tokens_in"], tokens_out=rnd["tokens_out"],
+                                       latency_ms=rnd["latency_ms"], attempts=i),
+                             thresholds)
+                if review is None:  # verifier itself escalated
+                    save_grade(con, it.item_id, order_label, "verifier", rubric.version,
+                               None, True, res.escalation_reason, res.budget_exhausted)
+                else:
+                    verdict, conf = combine(grader_out.verdict, grader_out.confidence,
+                                            review, thresholds.verifier_overturn_penalty)
+                    final = grader_out.model_copy(update={
+                        "verdict": verdict, "confidence": round(conf, 4),
+                        "reason": f"[{review.decision}] {review.reason}",
+                    })
+                    save_grade(con, it.item_id, order_label, "verifier", rubric.version,
+                               final, False, None, res.budget_exhausted)
+                save_trace(con, it.item_id, order_label, "verifier", rubric.version,
+                           res.trace, res.n_tool_calls, res.budget_exhausted,
+                           res.escalated, res.tokens_in, res.tokens_out, res.latency_ms)
+            n_done += 1
+            if n_done % 25 == 0:
+                status(f"[verifier] reviewed {n_done}/{len(tasks)} pending runs")
+    return n_done
+
+
+MODE_SETS = {
+    "on": ["agent"],
+    "off": ["single"],
+    "both": ["single", "agent"],
+    "all": ["single", "agent", "verifier"],
+    "verifier": ["verifier"],
+}
+
+
 def run(items_n: int = MAX_ITEMS, mock: bool = False, smoke_n: int = 10,
         tools: str = "both") -> None:
-    modes = {"on": ["agent"], "off": ["single"], "both": ["single", "agent"]}[tools]
+    modes = MODE_SETS[tools]
     # Mock runs live in their own DB and results dir so they can never
     # contaminate real grades or published metrics.
     db_path = DATA_DIR / ("second_reader_mock.duckdb" if mock else "second_reader.duckdb")
@@ -177,19 +285,24 @@ def run(items_n: int = MAX_ITEMS, mock: bool = False, smoke_n: int = 10,
     ).fetchall())
     status(f"step 3 OK — {n_new} new submissions; defective items by type: {truth}{tag}")
 
-    # Step 4: grader agent smoke test on smoke_n items, original order only
-    smoke_mode = modes[-1]  # 'agent' unless --tools off
-    smoke_ids = {it.item_id for it in items[:smoke_n]}
-    grade_all(con, client, items, rubric, thresholds, mock, smoke_mode,
-              orders=("original",), only_items=smoke_ids)
-    ok = len(graded_ids(con, "original", smoke_mode, rubric.version) & smoke_ids)
-    if ok < len(smoke_ids):
-        fail("grader smoke test", f"only {ok}/{len(smoke_ids)} smoke items produced valid output")
-    status(f"step 4 OK — [{smoke_mode}] valid structured output on {ok}/{len(smoke_ids)} smoke items{tag}")
+    # Step 4: grader smoke test on smoke_n items, original order only
+    # (skipped for a verifier-only run: it builds on existing agent grades)
+    smoke_mode = "agent" if "agent" in modes else modes[0]
+    if smoke_mode != "verifier":
+        smoke_ids = {it.item_id for it in items[:smoke_n]}
+        grade_all(con, client, items, rubric, thresholds, mock, smoke_mode,
+                  orders=("original",), only_items=smoke_ids)
+        ok = len(graded_ids(con, "original", smoke_mode, rubric.version) & smoke_ids)
+        if ok < len(smoke_ids):
+            fail("grader smoke test", f"only {ok}/{len(smoke_ids)} smoke items produced valid output")
+        status(f"step 4 OK — [{smoke_mode}] valid structured output on {ok}/{len(smoke_ids)} smoke items{tag}")
 
     # Step 5: full grading, both orders, each requested mode
     for mode in modes:
-        n_graded = grade_all(con, client, items, rubric, thresholds, mock, mode)
+        if mode == "verifier":
+            n_graded = verify_all(con, client, items, rubric, thresholds, mock)
+        else:
+            n_graded = grade_all(con, client, items, rubric, thresholds, mock, mode)
         total = con.execute(
             "SELECT count(*) FROM grades WHERE rubric_version=? AND mode=?",
             [rubric.version, mode],

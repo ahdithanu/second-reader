@@ -1,0 +1,83 @@
+{
+  "item_id": "0ca7bfac4994",
+  "defect_type": "SELF_CONTRADICTION",
+  "trace": [
+    {
+      "type": "api_round",
+      "tokens_in": 2013,
+      "tokens_out": 178,
+      "latency_ms": 3164.1
+    },
+    {
+      "type": "tool_call",
+      "name": "get_full_response",
+      "args": {
+        "item_id": "0ca7bfac4994",
+        "which": "a"
+      }
+    },
+    {
+      "type": "tool_result",
+      "name": "get_full_response",
+      "chars": 1442,
+      "preview": "{\"which\": \"A\", \"full_text\": \"One approach to solve this problem with linear complexity is to use the merge step of the merge sort algorithm. We can merge the two sorted lists into a single sorted list"
+    },
+    {
+      "type": "tool_call",
+      "name": "get_full_response",
+      "args": {
+        "item_id": "0ca7bfac4994",
+        "which": "b"
+      }
+    },
+    {
+      "type": "tool_result",
+      "name": "get_full_response",
+      "chars": 1210,
+      "preview": "{\"which\": \"B\", \"full_text\": \"To find the kth smallest element in the union of two sorted lists with linear complexity, you can use a single pass through the first list and keep track of the minimum el"
+    },
+    {
+      "type": "tool_call",
+      "name": "get_peer_judgments",
+      "args": {
+        "item_id": "0ca7bfac4994"
+      }
+    },
+    {
+      "type": "tool_result",
+      "name": "get_peer_judgments",
+      "chars": 147,
+      "preview": "{\"item_id\": \"0ca7bfac4994\", \"peer_votes\": [{\"judge\": \"expert_10\", \"vote\": \"A\"}], \"note\": \"votes from other human judges on the same response pair\"}"
+    },
+    {
+      "type": "api_round",
+      "tokens_in": 3114,
+      "tokens_out": 63,
+      "latency_ms": 1788.7
+    },
+    {
+      "type": "tool_call",
+      "name": "get_annotator_history",
+      "args": {
+        "annotator_id": "ann_05",
+        "limit": 10
+      }
+    },
+    {
+      "type": "tool_result",
+      "name": "get_annotator_history",
+      "chars": 5705,
+      "preview": "{\"annotator_id\": \"ann_05\", \"submissions\": [{\"item_id\": \"0eff0019524e\", \"vote\": \"B\", \"justification\": \"Response A includes the header row \\\"main character, book, author, year of publication\\\" which ser"
+    },
+    {
+      "type": "api_round",
+      "tokens_in": 4462,
+      "tokens_out": 200,
+      "latency_ms": 5347.7
+    },
+    {
+      "type": "escalation",
+      "reason": "Critical misalignment between annotator's vote and justification. The annotator voted for Response A but the justification clearly argues for Response B, stating \"Response B correctly solves the problem by merging the two sorted lists\" and \"Response A has a fundamental flaw - it only finds the minimum element across both lists rather than the kth smallest element.\" After reviewing the full responses, Response A does correctly implement the kth smallest element solution using merge, while Response B only finds the minimum element (ignoring k parameter). This is a clear vote-justification inversion where the annotator seems to have mixed up which response is which. The peer judgment also supports Response A. This appears to be a careless labeling error rather than a defensible judgment, warranting human review."
+    }
+  ]
+}

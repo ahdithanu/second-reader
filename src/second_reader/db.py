@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS defects (
 CREATE TABLE IF NOT EXISTS grades (
     item_id TEXT,
     order_label TEXT CHECK (order_label IN ('original', 'swapped')),
-    mode TEXT CHECK (mode IN ('agent', 'single')),
+    mode TEXT CHECK (mode IN ('agent', 'single', 'verifier')),
     rubric_version TEXT,
     dimension_scores TEXT,        -- JSON; NULL when escalated
     verdict TEXT CHECK (verdict IN ('accept', 'reject')),  -- NULL when escalated

@@ -43,6 +43,21 @@ class GraderOutput(BaseModel):
             )
 
 
+class VerifierReview(BaseModel):
+    """The adversarial verifier's terminal output: uphold or overturn."""
+
+    decision: Literal["uphold", "overturn"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def reason_nonempty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("reason must be a non-empty string")
+        return v.strip()
+
+
 class Annotator(BaseModel):
     """A synthetic annotator. Defects at this level span ALL their items."""
 

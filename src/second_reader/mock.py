@@ -78,7 +78,10 @@ class MockMessages:
                 usage=_Usage(len(str(prompt)) // 4, len(text) // 4),
                 stop_reason="end_turn",
             )
-        block = self._grade(messages, tools or [], tool_choice or {})
+        if isinstance(prompt, str) and "adversarial verifier" in prompt:
+            block = self._verify(messages, tool_choice or {})
+        else:
+            block = self._grade(messages, tools or [], tool_choice or {})
         est_in = sum(len(str(m)) for m in messages) // 4
         return _Response(content=[block], usage=_Usage(est_in, 80))
 
@@ -167,6 +170,51 @@ class MockMessages:
         return self._emit("accept", round(0.6 + 0.35 * noise, 2),
                           "Vote is defensible against the full responses and the justification is specific and aligned.",
                           _DIMS_ACCEPT)
+
+    def _verify(self, messages: list, tool_choice: dict) -> _ToolUseBlock:
+        """Adversarial verifier simulation: pull history once, then attack."""
+        prompt = messages[0]["content"]
+        vote = self._m(r"Vote: Response (A|B) is better", prompt)
+        annotator_id = self._m(r"Annotator: (ann_\d+)", prompt) or "ann_00"
+        just = self._between(prompt, "Justification: ", "\n\n## Rubric")
+        grader_verdict = self._m(r"Verdict: (accept|reject)", prompt) or "accept"
+        seed = _h(prompt)
+        forced = tool_choice.get("type") == "tool"
+
+        called = self._called_tools(messages)
+        if not forced and "get_annotator_history" not in called:
+            return _ToolUseBlock("get_annotator_history",
+                                 {"annotator_id": annotator_id, "limit": 10})
+
+        def review(decision, confidence, reason):
+            return _ToolUseBlock("emit_review", {
+                "decision": decision, "confidence": confidence, "reason": reason,
+            })
+
+        if grader_verdict == "reject":
+            return review("uphold", 0.9, "The reject verdict survives scrutiny.")
+
+        history = self._latest_json(self._tool_results(messages), "submissions")
+        if history is not None:
+            subs = history.get("submissions", [])
+            justs = [s["justification"] for s in subs]
+            votes = [s["vote"] for s in subs]
+            if len(justs) >= 5 and len(set(justs)) == 1:
+                return review("overturn", 0.9,
+                              "History shows verbatim justification reuse the grader missed.")
+            if len(votes) >= 6 and len(set(votes)) == 1:
+                return review("overturn", 0.85,
+                              "History shows constant-side voting the grader missed.")
+        other = "B" if vote == "A" else "A"
+        if just.count(f"Response {other}") > just.count(f"Response {vote}"):
+            return review("overturn", 0.85,
+                          "The justification argues against the vote; the accept cannot stand.")
+        if seed % 29 == 0:
+            return _ToolUseBlock("flag_for_review",
+                                 {"reason": "Cannot confirm or break this verdict on the available evidence."})
+        noise = (seed % 100) / 100
+        return review("uphold", round(0.55 + 0.4 * noise, 2),
+                      "Tried and failed to break the accept verdict.")
 
     def _verdict_from_context(self, vote, just, seed, results) -> _ToolUseBlock:
         if len(just.split()) < 10:

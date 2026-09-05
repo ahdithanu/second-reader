@@ -1,0 +1,6 @@
+STATUS: step 1 OK — 150 items, 218 peer votes in DuckDB
+STATUS: step 2 OK — 15 annotators, items/annotator 8-12, 4 defective
+STATUS: step 3 OK — 0 new submissions; defective items by type: {'BOILERPLATE': 20, 'POSITION_BIAS': 18, 'RUSHED': 14, 'SELF_CONTRADICTION': 14}
+STATUS: step 4 OK — [agent] valid structured output on 10/10 smoke items
+STATUS: step 5 OK — [single] 0 new runs; 300 grades total
+STATUS: step 5 OK — [agent] 0 new runs; 300 grades total

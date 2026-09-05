@@ -12,8 +12,9 @@ def main() -> None:
 
     run_p = sub.add_parser("run", help="full pipeline: load -> annotators -> submissions -> smoke -> grade -> route -> sweep")
     run_p.add_argument("--items", type=int, default=150)
-    run_p.add_argument("--tools", choices=["on", "off", "both"], default="both",
-                       help="agent loop (on), single-call ablation (off), or both for the comparison")
+    run_p.add_argument("--tools", choices=["on", "off", "both", "all", "verifier"], default="both",
+                       help="agent loop (on), single-call ablation (off), both, all three arms "
+                            "incl. the adversarial verifier, or verifier alone on existing agent grades")
     run_p.add_argument("--mock", action="store_true",
                        help="use the deterministic mock client (plumbing verification only)")
     run_p.add_argument("--smoke", type=int, default=10, help="items for the grader smoke test")
@@ -25,11 +26,11 @@ def main() -> None:
     trace_p = sub.add_parser("trace", help="print the verbatim agent trace for one item")
     trace_p.add_argument("--item-id", required=True)
     trace_p.add_argument("--order", choices=["original", "swapped"], default="original")
-    trace_p.add_argument("--mode", choices=["agent", "single"], default="agent")
+    trace_p.add_argument("--mode", choices=["agent", "single", "verifier"], default="agent")
     trace_p.add_argument("--mock", action="store_true", help="read the mock-run DB")
 
     rep_p = sub.add_parser("report", help="metrics at the operating point + missed defects by type")
-    rep_p.add_argument("--mode", choices=["agent", "single"], default="agent")
+    rep_p.add_argument("--mode", choices=["agent", "single", "verifier"], default="agent")
     rep_p.add_argument("--defect", default=None, help="list missed items of this defect type")
     rep_p.add_argument("--mock", action="store_true", help="read the mock-run DB")
 

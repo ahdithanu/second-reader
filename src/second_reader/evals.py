@@ -22,7 +22,22 @@ from .config import RESULTS_DIR, Thresholds
 from .defects import DEFECT_TYPES
 from .router import acceptance_score
 
-MODES = ["single", "agent"]
+MODES = ["single", "agent", "verifier"]
+
+MODE_LABELS = {
+    "single": "tools OFF",
+    "agent": "tools ON",
+    "verifier": "ON + verifier",
+}
+
+
+def arm_cost(con: duckdb.DuckDBPyConnection, mode: str) -> float:
+    """Total grading cost of running an arm as a system. The verifier arm
+    consumes agent verdicts, so its system cost includes the agent pass."""
+    cost = grading_cost(con, mode)
+    if mode == "verifier":
+        cost += grading_cost(con, "agent")
+    return cost
 
 
 def flag_metrics(records: list[dict], high: float, low: float) -> dict:
@@ -111,7 +126,7 @@ def sweep(con: duckdb.DuckDBPyConnection, thresholds: Thresholds,
         records = scored_records(con, rubric_version, thresholds.flip_penalty, mode)
         if not records:
             continue
-        cost_1k = grading_cost(con, mode) / len(records) * 1000
+        cost_1k = arm_cost(con, mode) / len(records) * 1000
         for high in thresholds.sweep_high:
             for low in thresholds.sweep_low:
                 if low >= high:
@@ -141,38 +156,44 @@ def _fmt(x, pct: bool = False) -> str:
 
 def ablation_table(con: duckdb.DuckDBPyConnection, thresholds: Thresholds,
                    rubric_version: str) -> str:
-    """The headline: recall by defect type, tools on vs off, at the operating point."""
+    """The headline: recall by defect type across arms, at the operating point.
+
+    Renders whichever arms have grades. `single` gets a recall column only
+    (it cannot escalate); agent arms get recall + catch (incl. escalation).
+    """
     metrics = {}
     for mode in MODES:
         records = scored_records(con, rubric_version, thresholds.flip_penalty, mode)
         if records:
             metrics[mode] = flag_metrics(records, thresholds.high, thresholds.low)
-    if set(metrics) != set(MODES):
+    if "single" not in metrics or "agent" not in metrics:
         return "(ablation incomplete: missing a mode)"
+    present = [m for m in MODES if m in metrics]
+
+    cols = []
+    for m in present:
+        cols.append((m, "recall_by_type", f"Recall, {MODE_LABELS[m]}"))
+        if m != "single":
+            cols.append((m, "catch_by_type", f"Catch, {MODE_LABELS[m]}"))
 
     lines = [
-        "| Defect type | Recall, tools OFF | Recall, tools ON | Catch incl. agent escalation (ON) |",
-        "|---|---|---|---|",
+        "| Defect type | " + " | ".join(c[2] for c in cols) + " |",
+        "|---|" + "---|" * len(cols),
     ]
     for dt in DEFECT_TYPES:
-        lines.append(
-            f"| {dt} | {_fmt(metrics['single']['recall_by_type'][dt], pct=True)} "
-            f"| {_fmt(metrics['agent']['recall_by_type'][dt], pct=True)} "
-            f"| {_fmt(metrics['agent']['catch_by_type'][dt], pct=True)} |"
-        )
-    lines.append(
-        f"| **Overall** | **{_fmt(metrics['single']['recall'], pct=True)}** "
-        f"| **{_fmt(metrics['agent']['recall'], pct=True)}** "
-        f"| **{_fmt(metrics['agent']['catch_rate'], pct=True)}** |"
-    )
+        cells = [_fmt(metrics[m][key][dt], pct=True) for m, key, _ in cols]
+        lines.append(f"| {dt} | " + " | ".join(cells) + " |")
+    overall = []
+    for m, key, _ in cols:
+        overall.append(f"**{_fmt(metrics[m]['recall' if key == 'recall_by_type' else 'catch_rate'], pct=True)}**")
+    lines.append("| **Overall** | " + " | ".join(overall) + " |")
     lines.append("")
-    lines.append(
-        f"Flag precision: tools OFF {_fmt(metrics['single']['precision'], pct=True)}, "
-        f"tools ON {_fmt(metrics['agent']['precision'], pct=True)}. "
-        f"Review load: OFF {_fmt(metrics['single']['review_load'], pct=True)}, "
-        f"ON {_fmt(metrics['agent']['review_load'], pct=True)} "
-        f"(of which {metrics['agent']['n_escalated']} agent-escalated)."
-    )
+    lines.append(" ".join(
+        f"[{MODE_LABELS[m]}] precision {_fmt(metrics[m]['precision'], pct=True)}, "
+        f"review load {_fmt(metrics[m]['review_load'], pct=True)}, "
+        f"escalated {metrics[m]['n_escalated']}."
+        for m in present
+    ))
     return "\n".join(lines)
 
 
@@ -216,16 +237,29 @@ def tool_metrics(con: duckdb.DuckDBPyConnection, thresholds: Thresholds,
             m = flag_metrics(records, thresholds.high, thresholds.low)
             per_mode[mode] = {
                 "recall": m["recall"],
-                "cost_per_1000": grading_cost(con, mode) / len(records) * 1000,
+                "catch": m["catch_rate"],
+                "cost_per_1000": arm_cost(con, mode) / len(records) * 1000,
             }
-    if set(per_mode) == set(MODES):
-        d_recall_pts = (per_mode["agent"]["recall"] - per_mode["single"]["recall"]) * 100
-        d_cost = per_mode["agent"]["cost_per_1000"] - per_mode["single"]["cost_per_1000"]
-        result["cost_per_1000"] = {m: per_mode[m]["cost_per_1000"] for m in MODES}
-        result["recall_at_operating_point"] = {m: per_mode[m]["recall"] for m in MODES}
-        result["marginal_cost_per_recall_point_per_1000"] = (
-            d_cost / d_recall_pts if d_recall_pts > 0 else None
-        )
+    result["cost_per_1000"] = {m: v["cost_per_1000"] for m, v in per_mode.items()}
+    result["recall_at_operating_point"] = {m: v["recall"] for m, v in per_mode.items()}
+    result["catch_at_operating_point"] = {m: v["catch"] for m, v in per_mode.items()}
+
+    def marginal(a: str, b: str, metric: str) -> float | None:
+        """$ per point of `metric` gained per 1,000 items, arm b over arm a."""
+        if a not in per_mode or b not in per_mode:
+            return None
+        d_pts = (per_mode[b][metric] - per_mode[a][metric]) * 100
+        d_cost = per_mode[b]["cost_per_1000"] - per_mode[a]["cost_per_1000"]
+        return d_cost / d_pts if d_pts > 0 else None
+
+    result["marginal_cost_per_point_per_1000"] = {
+        "agent_vs_single": {"recall": marginal("single", "agent", "recall"),
+                            "catch": marginal("single", "agent", "catch")},
+        "verifier_vs_single": {"recall": marginal("single", "verifier", "recall"),
+                               "catch": marginal("single", "verifier", "catch")},
+        "verifier_vs_agent": {"recall": marginal("agent", "verifier", "recall"),
+                              "catch": marginal("agent", "verifier", "catch")},
+    }
     return result
 
 
