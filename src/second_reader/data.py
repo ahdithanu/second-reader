@@ -1,9 +1,14 @@
-"""Load lmsys/mt_bench_human_judgments, sample deterministically, store in DuckDB."""
+"""Load lmsys/mt_bench_human_judgments, sample deterministically, store in DuckDB.
+
+Also extracts peer votes: other judges' votes on the same (question, model
+pair) from the full dataset, which power the get_peer_judgments tool.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import random
+from collections import defaultdict
 
 import duckdb
 
@@ -29,7 +34,6 @@ def _extract(row: dict) -> Item | None:
     conv_a, conv_b = row["conversation_a"], row["conversation_b"]
     if len(conv_a) < 2 or len(conv_b) < 2:
         return None
-    question = conv_a[0]["content"]
     return Item(
         item_id=_stable_id(row["question_id"], row["model_a"], row["model_b"], row["judge"], row["turn"]),
         question_id=row["question_id"],
@@ -37,14 +41,14 @@ def _extract(row: dict) -> Item | None:
         turn=row["turn"],
         model_a=row["model_a"],
         model_b=row["model_b"],
-        question=question,
+        question=conv_a[0]["content"],
         response_a=conv_a[1]["content"],
         response_b=conv_b[1]["content"],
         human_gold_vote="A" if row["winner"] == "model_a" else "B",
     )
 
 
-def load_items(con: duckdb.DuckDBPyConnection, max_items: int = 300) -> int:
+def load_items(con: duckdb.DuckDBPyConnection, max_items: int = 150) -> int:
     """Idempotent: if items are already loaded, do nothing and return the count."""
     existing = con.execute("SELECT count(*) FROM items").fetchone()[0]
     if existing >= max_items:
@@ -53,8 +57,18 @@ def load_items(con: duckdb.DuckDBPyConnection, max_items: int = 300) -> int:
     from datasets import load_dataset  # deferred: heavy import
 
     ds = load_dataset(DATASET, split="human")
+
+    # All turn-1 votes per (question, ordered model pair), for peer lookups.
+    votes_by_pair: dict[tuple, list[tuple[str, str]]] = defaultdict(list)
     items: dict[str, Item] = {}
     for row in ds:
+        if row["turn"] != 1:
+            continue
+        vote = {"model_a": "A", "model_b": "B", "tie": "tie"}.get(row["winner"])
+        if vote:
+            votes_by_pair[(row["question_id"], row["model_a"], row["model_b"])].append(
+                (row["judge"], vote)
+            )
         item = _extract(row)
         if item is not None:
             items[item.item_id] = item  # dedupe on stable id
@@ -76,6 +90,22 @@ def load_items(con: duckdb.DuckDBPyConnection, max_items: int = 300) -> int:
             for it in sample
         ],
     )
+
+    # Peers: same pair same order, plus the reversed pair with votes flipped.
+    con.execute("DELETE FROM peer_votes")
+    flip = {"A": "B", "B": "A", "tie": "tie"}
+    for it in sample:
+        peers: dict[str, str] = {}
+        for judge, vote in votes_by_pair.get((it.question_id, it.model_a, it.model_b), []):
+            peers[judge] = vote
+        for judge, vote in votes_by_pair.get((it.question_id, it.model_b, it.model_a), []):
+            peers.setdefault(judge, flip[vote])
+        peers.pop(it.judge, None)  # the item's own judge is not a peer
+        if peers:
+            con.executemany(
+                "INSERT OR IGNORE INTO peer_votes VALUES (?,?,?)",
+                [(it.item_id, judge, vote) for judge, vote in peers.items()],
+            )
     return len(sample)
 
 

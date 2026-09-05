@@ -1,100 +1,93 @@
-"""Defect injection correctness: determinism, rates, and per-type properties."""
+"""Annotator model + defect injection correctness at both scopes."""
 
 import random
 
+from conftest import make_item, make_submission
+from second_reader.annotators import (
+    plan_assignment,
+    plan_defective_annotators,
+)
 from second_reader.defects import (
-    BOILERPLATE_TEXT,
-    DEFECT_TYPES,
-    make_defective,
-    plan_injection,
+    BOILERPLATE_TEMPLATES,
+    ITEM_DEFECT_TYPES,
+    make_item_defective,
+    plan_item_injection,
     swap_letters,
     swapped_view,
 )
-from second_reader.schemas import Item, Submission
 
-ITEM_IDS = [f"item{i:03d}" for i in range(100)]
-
-
-def clean_sub(item_id="item000", vote="B") -> Submission:
-    return Submission(
-        item_id=item_id, vote=vote,
-        justification=(
-            "I preferred Response B because it answers the question directly "
-            "and is more accurate. Response A misses the second half of the prompt."
-        ),
-    )
+ITEM_IDS = [f"item{i:03d}" for i in range(150)]
 
 
-class TestPlan:
+class TestAnnotatorAssignment:
     def test_deterministic(self):
-        assert plan_injection(ITEM_IDS) == plan_injection(ITEM_IDS)
-        assert plan_injection(list(reversed(ITEM_IDS))) == plan_injection(ITEM_IDS)
+        assert plan_assignment(ITEM_IDS) == plan_assignment(ITEM_IDS)
+        assert plan_assignment(list(reversed(ITEM_IDS))) == plan_assignment(ITEM_IDS)
 
-    def test_fraction(self):
-        plan = plan_injection(ITEM_IDS, fraction=0.25)
-        assert len(plan) == 25
+    def test_every_item_assigned_once(self):
+        plan = plan_assignment(ITEM_IDS)
+        assert sorted(plan) == sorted(ITEM_IDS)
 
-    def test_all_types_represented(self):
-        plan = plan_injection(ITEM_IDS)
-        counts = {t: 0 for t in DEFECT_TYPES}
-        for t in plan.values():
-            counts[t] += 1
-        # 25 items across 4 types -> 6 or 7 each
-        assert all(6 <= c <= 7 for c in counts.values()), counts
+    def test_each_annotator_gets_8_to_12(self):
+        plan = plan_assignment(ITEM_IDS)
+        counts: dict[str, int] = {}
+        for aid in plan.values():
+            counts[aid] = counts.get(aid, 0) + 1
+        assert len(counts) == 15
+        assert all(8 <= c <= 12 for c in counts.values()), counts
+
+    def test_defective_annotators_two_of_each(self):
+        bad = plan_defective_annotators()
+        assert len(bad) == 4
+        types = sorted(bad.values())
+        assert types == ["BOILERPLATE", "BOILERPLATE", "POSITION_BIAS", "POSITION_BIAS"]
+        assert plan_defective_annotators() == bad  # deterministic
 
 
-class TestDefectProperties:
-    def test_rushed_under_10_words(self):
+class TestItemLevelInjection:
+    def test_plan_deterministic_and_25pct(self):
+        clean = ITEM_IDS[:110]
+        plan = plan_item_injection(clean)
+        assert plan == plan_item_injection(clean)
+        assert len(plan) == int(110 * 0.25)
+        assert set(plan.values()) <= set(ITEM_DEFECT_TYPES)
+
+    def test_rushed_under_10_words_vote_unchanged(self):
         rng = random.Random(0)
         for _ in range(20):
-            bad = make_defective(clean_sub(), "RUSHED", rng)
+            bad = make_item_defective(make_submission(vote="B"), "RUSHED", rng)
             assert len(bad.justification.split()) < 10
             assert bad.is_defective and bad.defect_type == "RUSHED"
-            assert bad.vote == "B"  # vote unchanged
-
-    def test_boilerplate_verbatim_identical(self):
-        rng = random.Random(0)
-        texts = {make_defective(clean_sub(item_id=i), "BOILERPLATE", rng).justification
-                 for i in ITEM_IDS[:10]}
-        assert texts == {BOILERPLATE_TEXT}
-
-    def test_position_bias_always_votes_a(self):
-        rng = random.Random(0)
-        for vote in ("A", "B"):
-            bad = make_defective(clean_sub(vote=vote), "POSITION_BIAS", rng)
-            assert bad.vote == "A"
-            assert bad.defect_type == "POSITION_BIAS"
+            assert bad.vote == "B"
 
     def test_self_contradiction_argues_for_other_response(self):
         rng = random.Random(0)
-        bad = make_defective(clean_sub(vote="B"), "SELF_CONTRADICTION", rng)
+        bad = make_item_defective(make_submission(vote="B"), "SELF_CONTRADICTION", rng)
         assert bad.vote == "B"  # vote unchanged...
         # ...but the justification now argues for Response A.
         assert "I preferred Response A" in bad.justification
         assert "Response B misses" in bad.justification
 
+    def test_boilerplate_templates_are_letter_free(self):
+        # Templates must survive the order swap unchanged, or the swapped run
+        # would see a different string and the verbatim-reuse signal would break.
+        for t in BOILERPLATE_TEMPLATES:
+            assert "Response A" not in t and "Response B" not in t
+
 
 class TestSwap:
     def test_swap_letters_roundtrip(self):
-        text = clean_sub().justification
+        text = make_submission().justification
         assert swap_letters(swap_letters(text)) == text
-        swapped = swap_letters(text)
-        assert "I preferred Response A" in swapped
 
     def test_swapped_view_is_semantically_identical(self):
-        item = Item(
-            item_id="x", question_id=1, judge="j", turn=1,
-            model_a="m1", model_b="m2", question="Q?",
-            response_a="first answer", response_b="second answer",
-            human_gold_vote="B",
-        )
-        sub = clean_sub(item_id="x", vote="B")
+        item = make_item(gold="B")
+        sub = make_submission(vote="B")
         item2, sub2 = swapped_view(item, sub)
-        assert item2.response_a == "second answer"
-        assert item2.response_b == "first answer"
+        assert item2.response_a == item.response_b
+        assert item2.response_b == item.response_a
         assert item2.human_gold_vote == "A"
         assert sub2.vote == "A"
-        # The vote still points at the same underlying response text.
         chosen_before = item.response_b if sub.vote == "B" else item.response_a
         chosen_after = item2.response_a if sub2.vote == "A" else item2.response_b
         assert chosen_before == chosen_after

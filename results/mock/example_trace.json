@@ -1,0 +1,39 @@
+{
+  "item_id": "0ca7bfac4994",
+  "defect_type": "SELF_CONTRADICTION",
+  "trace": [
+    {
+      "type": "api_round",
+      "tokens_in": 715,
+      "tokens_out": 80,
+      "latency_ms": 0.0
+    },
+    {
+      "type": "tool_call",
+      "name": "get_annotator_history",
+      "args": {
+        "annotator_id": "ann_05",
+        "limit": 10
+      }
+    },
+    {
+      "type": "tool_result",
+      "name": "get_annotator_history",
+      "chars": 2145,
+      "preview": "{\"annotator_id\": \"ann_05\", \"submissions\": [{\"item_id\": \"0eff0019524e\", \"vote\": \"B\", \"justification\": \"I went with Response A because it answers the question more directly and its structure is easier t"
+    },
+    {
+      "type": "api_round",
+      "tokens_in": 1319,
+      "tokens_out": 80,
+      "latency_ms": 0.0
+    },
+    {
+      "type": "verdict",
+      "verdict": "reject",
+      "confidence": 0.84,
+      "reason": "The justification argues for the response the annotator voted against.",
+      "budget_exhausted": false
+    }
+  ]
+}

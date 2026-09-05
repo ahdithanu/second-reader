@@ -1,9 +1,17 @@
 """Deterministic mock Anthropic client for plumbing verification ONLY.
 
-Lets the whole pipeline (data -> annotate -> inject -> grade x2 -> route ->
-sweep) run end-to-end with zero API calls. Its heuristics are intentionally
-crude; numbers produced under --mock are NEVER publishable metrics. The call
-log marks these rows mock=true.
+Speaks the tool-use protocol: emits tool_use blocks, reads tool_result blocks
+back, respects tool_choice forcing. Lets the whole agent pipeline run
+end-to-end with zero API calls. Its heuristics are intentionally crude;
+numbers produced under --mock are NEVER publishable metrics. Call-log rows
+are marked mock=true.
+
+Mock agent policy (tools on): pull annotator history first; reject on
+cross-item patterns (verbatim reuse, constant-side voting). Otherwise check
+the item itself: rushed -> reject, contradiction -> reject, peer-majority
+disagreement -> escalate or low-confidence reject, else read both full
+responses and accept. A hash-picked ~5% of runs over-read until they hit the
+tool budget, to exercise the forced-verdict path.
 """
 
 from __future__ import annotations
@@ -11,7 +19,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import count
+
+_ids = count(1)
 
 
 @dataclass
@@ -21,14 +32,24 @@ class _Usage:
 
 
 @dataclass
-class _Block:
+class _TextBlock:
     text: str
+    type: str = "text"
+
+
+@dataclass
+class _ToolUseBlock:
+    name: str
+    input: dict
+    type: str = "tool_use"
+    id: str = field(default_factory=lambda: f"toolu_mock_{next(_ids)}")
 
 
 @dataclass
 class _Response:
     content: list
     usage: _Usage
+    stop_reason: str = "tool_use"
 
 
 def _h(text: str) -> int:
@@ -42,19 +63,26 @@ _ANNOT_TEMPLATES = [
     "Response {v} does a better job of actually addressing the prompt, and its examples are more useful. Response {o} is readable but shallower, so I voted for Response {v}.",
 ]
 
+_DIMS_ACCEPT = {"decision_plausibility": 4, "justification_alignment": 5, "specificity": 4, "effort": 4}
+_DIMS_REJECT = {"decision_plausibility": 2, "justification_alignment": 1, "specificity": 1, "effort": 1}
+
 
 class MockMessages:
-    def create(self, model: str, max_tokens: int, messages: list) -> _Response:
+    def create(self, model: str, max_tokens: int, messages: list,
+               tools: list | None = None, tool_choice: dict | None = None) -> _Response:
         prompt = messages[0]["content"]
-        if "simulating a careful human annotator" in prompt:
+        if isinstance(prompt, str) and "simulating a human annotator" in prompt:
             text = self._annotate(prompt)
-        else:
-            text = self._grade(prompt)
-        return _Response(
-            content=[_Block(text=text)],
-            usage=_Usage(input_tokens=len(prompt) // 4, output_tokens=len(text) // 4),
-        )
+            return _Response(
+                content=[_TextBlock(text=text)],
+                usage=_Usage(len(str(prompt)) // 4, len(text) // 4),
+                stop_reason="end_turn",
+            )
+        block = self._grade(messages, tools or [], tool_choice or {})
+        est_in = sum(len(str(m)) for m in messages) // 4
+        return _Response(content=[block], usage=_Usage(est_in, 80))
 
+    # --- annotator simulation -------------------------------------------
     def _annotate(self, prompt: str) -> str:
         m = re.search(r"decided that Response (A|B) is better", prompt)
         v = m.group(1) if m else "A"
@@ -62,41 +90,148 @@ class MockMessages:
         tpl = _ANNOT_TEMPLATES[_h(prompt) % len(_ANNOT_TEMPLATES)]
         return tpl.format(v=v, o=o)
 
-    def _grade(self, prompt: str) -> str:
-        vote_m = re.search(r"Vote: Response (A|B) is better", prompt)
-        just_m = re.search(r"Justification: (.*?)\n\n## Rubric", prompt, re.DOTALL)
-        vote = vote_m.group(1) if vote_m else "A"
-        just = just_m.group(1).strip() if just_m else ""
+    # --- grader agent simulation ----------------------------------------
+    def _grade(self, messages: list, tools: list, tool_choice: dict) -> _ToolUseBlock:
+        prompt = messages[0]["content"]
+        vote = self._m(r"Vote: Response (A|B) is better", prompt)
+        annotator_id = self._m(r"Annotator: (ann_\d+)", prompt) or "ann_00"
+        item_id = self._m(r"Item: (\w+)", prompt) or ""
+        just = self._between(prompt, "Justification: ", "\n\n## Rubric")
+        seed = _h(prompt)
+
+        called = self._called_tools(messages)
+        results = self._tool_results(messages)
+        forced = tool_choice.get("type") == "tool" or all(
+            t["name"] == "emit_verdict" for t in tools
+        )
+        tools_on = any(t["name"] == "get_annotator_history" for t in tools)
+
+        # Tools-off (or forced): verdict from the visible context alone.
+        if forced or not tools_on:
+            return self._verdict_from_context(vote, just, seed, results)
+
+        # ~5% of runs over-read until the budget forces a verdict.
+        if seed % 19 == 0:
+            which = "a" if called.count("get_full_response") % 2 == 0 else "b"
+            return _ToolUseBlock("get_full_response", {"item_id": item_id, "which": which})
+
+        if "get_annotator_history" not in called:
+            return _ToolUseBlock("get_annotator_history",
+                                 {"annotator_id": annotator_id, "limit": 10})
+
+        history = self._latest_json(results, "submissions")
+        if history is not None:
+            subs = history.get("submissions", [])
+            justs = [s["justification"] for s in subs]
+            votes = [s["vote"] for s in subs]
+            if len(justs) >= 5 and len(set(justs)) == 1:
+                return self._emit("reject", 0.92,
+                                  "Annotator history shows the same justification reused verbatim across items.",
+                                  _DIMS_REJECT)
+            if len(votes) >= 6 and len(set(votes)) == 1:
+                return self._emit("reject", 0.85,
+                                  "Annotator history shows a constant-side vote on every item regardless of content.",
+                                  _DIMS_REJECT)
+
+        if len(just.split()) < 10:
+            return self._emit("reject", 0.88,
+                              "Justification is a one-line dismissal with no evidence of reading the responses.",
+                              {"decision_plausibility": 2, "justification_alignment": 2, "specificity": 0, "effort": 0})
+
         other = "B" if vote == "A" else "A"
+        if just.count(f"Response {other}") > just.count(f"Response {vote}"):
+            return self._emit("reject", 0.84,
+                              "The justification argues for the response the annotator voted against.",
+                              {"decision_plausibility": 2, "justification_alignment": 0, "specificity": 3, "effort": 3})
 
-        n_words = len(just.split())
-        mentions_vote = just.count(f"Response {vote}")
-        mentions_other = just.count(f"Response {other}")
-        generic = "Response A" not in just and "Response B" not in just
+        if "get_peer_judgments" not in called:
+            return _ToolUseBlock("get_peer_judgments", {"item_id": item_id})
 
-        if n_words < 10:
-            verdict, conf, reason = "reject", 0.9, "Justification is a one-line dismissal with no evidence of reading the responses."
-            dims = {"decision_plausibility": 2, "justification_alignment": 2, "specificity": 0, "effort": 0}
-        elif generic and n_words < 30:
-            verdict, conf, reason = "reject", 0.8, "Generic template praise that never references either response specifically."
-            dims = {"decision_plausibility": 2, "justification_alignment": 2, "specificity": 1, "effort": 1}
-        elif mentions_other > mentions_vote:
-            verdict, conf, reason = "reject", 0.75, "The justification argues for the response the annotator voted against."
-            dims = {"decision_plausibility": 2, "justification_alignment": 0, "specificity": 3, "effort": 3}
-        else:
-            noise = (_h(just or prompt) % 100) / 100
-            verdict, conf = "accept", round(0.6 + 0.35 * noise, 2)
-            reason = "Vote is defensible and the justification is specific and aligned with it."
-            dims = {"decision_plausibility": 4, "justification_alignment": 5, "specificity": 4, "effort": 4}
+        peers = self._latest_json(results, "peer_votes")
+        if peers is not None:
+            pv = [p["vote"] for p in peers.get("peer_votes", []) if p["vote"] != "tie"]
+            if len(pv) >= 2 and pv.count(vote) == 0:
+                if seed % 2 == 0:
+                    return _ToolUseBlock("flag_for_review", {
+                        "reason": "Every peer judge voted the other way; I cannot tell whether the annotator misread the responses or has a defensible minority view.",
+                    })
+                return self._emit("reject", 0.6,
+                                  "Vote contradicts every peer judgment on this pair.",
+                                  {"decision_plausibility": 1, "justification_alignment": 4, "specificity": 3, "effort": 3})
 
-        payload = json.dumps({
+        if called.count("get_full_response") < 2:
+            which = "a" if called.count("get_full_response") == 0 else "b"
+            return _ToolUseBlock("get_full_response", {"item_id": item_id, "which": which})
+
+        noise = (seed % 100) / 100
+        return self._emit("accept", round(0.6 + 0.35 * noise, 2),
+                          "Vote is defensible against the full responses and the justification is specific and aligned.",
+                          _DIMS_ACCEPT)
+
+    def _verdict_from_context(self, vote, just, seed, results) -> _ToolUseBlock:
+        if len(just.split()) < 10:
+            return self._emit("reject", 0.9,
+                              "Justification is a one-line dismissal.",
+                              {"decision_plausibility": 2, "justification_alignment": 2, "specificity": 0, "effort": 0})
+        other = "B" if vote == "A" else "A"
+        if just.count(f"Response {other}") > just.count(f"Response {vote}"):
+            return self._emit("reject", 0.8,
+                              "The justification argues for the other response.",
+                              {"decision_plausibility": 2, "justification_alignment": 0, "specificity": 3, "effort": 3})
+        noise = (seed % 100) / 100
+        return self._emit("accept", round(0.55 + 0.4 * noise, 2),
+                          "Nothing suspicious visible in the available context.",
+                          _DIMS_ACCEPT)
+
+    # --- helpers ----------------------------------------------------------
+    @staticmethod
+    def _emit(verdict, confidence, reason, dims) -> _ToolUseBlock:
+        return _ToolUseBlock("emit_verdict", {
             "dimension_scores": dims, "verdict": verdict,
-            "confidence": conf, "reason": reason,
+            "confidence": confidence, "reason": reason,
         })
-        # Occasionally wrap in a code fence to exercise the extractor.
-        if _h(prompt) % 7 == 0:
-            return f"```json\n{payload}\n```"
-        return payload
+
+    @staticmethod
+    def _m(pattern: str, text: str) -> str | None:
+        m = re.search(pattern, text)
+        return m.group(1) if m else None
+
+    @staticmethod
+    def _between(text: str, start: str, end: str) -> str:
+        i = text.find(start)
+        j = text.find(end, i)
+        return text[i + len(start):j].strip() if i != -1 and j != -1 else ""
+
+    @staticmethod
+    def _called_tools(messages: list) -> list[str]:
+        names = []
+        for m in messages:
+            if m.get("role") == "assistant" and isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if getattr(b, "type", None) == "tool_use":
+                        names.append(b.name)
+        return names
+
+    @staticmethod
+    def _tool_results(messages: list) -> list[str]:
+        out = []
+        for m in messages:
+            if m.get("role") == "user" and isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        out.append(str(b.get("content", "")))
+        return out
+
+    @staticmethod
+    def _latest_json(results: list[str], must_have_key: str) -> dict | None:
+        for text in reversed(results):
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict) and must_have_key in data:
+                return data
+        return None
 
 
 class MockClient:

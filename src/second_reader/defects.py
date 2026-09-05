@@ -1,8 +1,17 @@
-"""Component 2b: defect injection.
+"""Component 1b: defect injection, now at two scopes.
 
-Four defect types injected into a labeled 25% subset (seed 42). Ground truth
-is recorded in the `defects` table so recall is unambiguous. Also home of the
-letter-swap helpers used by both SELF_CONTRADICTION and the order-swap check.
+Annotator-scoped (applied during submission generation, ALL items of the
+defective annotator):
+  BOILERPLATE     one justification template reused verbatim across all items
+  POSITION_BIAS   vote forced to Response A on every item
+
+Item-scoped (injected into 25% of items belonging to otherwise-clean
+annotators, seed 42):
+  RUSHED              justification under 10 words, generic
+  SELF_CONTRADICTION  justification argues for the other response
+
+Ground truth is recorded at both levels: `annotators.is_defective` and, for
+every defective item regardless of scope, a row in `defects`.
 """
 
 from __future__ import annotations
@@ -14,8 +23,9 @@ import duckdb
 from .schemas import Item, Submission
 
 DEFECT_TYPES = ["RUSHED", "BOILERPLATE", "POSITION_BIAS", "SELF_CONTRADICTION"]
+ITEM_DEFECT_TYPES = ["RUSHED", "SELF_CONTRADICTION"]
 SEED = 42
-DEFECT_FRACTION = 0.25
+ITEM_DEFECT_FRACTION = 0.25
 
 RUSHED_TEXTS = [
     "{v} is just better.",
@@ -24,19 +34,13 @@ RUSHED_TEXTS = [
     "{v}. No contest.",
 ]
 
-# Verbatim-identical across every BOILERPLATE item — that IS the defect.
-BOILERPLATE_TEXT = (
+# One template per BOILERPLATE annotator, reused verbatim on ALL their items.
+BOILERPLATE_TEMPLATES = [
     "The response I picked is more helpful, better structured, and more "
-    "accurate overall, so it was the clear choice."
-)
-
-POSITION_BIAS_TEXTS = [
-    "Response A gets to the point faster and covers what was asked, so I went with it.",
-    "I found Response A clearer and more complete than Response B.",
-    "Response A does a better job answering the question directly, which decided it for me.",
-    "Response A is stronger overall — better flow and it addresses the question head on.",
+    "accurate overall, so it was the clear choice.",
+    "I chose this one because it answers the question well and is easy to "
+    "follow from start to finish.",
 ]
-
 
 def swap_letters(text: str) -> str:
     """Swap 'Response A' <-> 'Response B' references in a justification."""
@@ -66,26 +70,12 @@ def swapped_view(item: Item, sub: Submission) -> tuple[Item, Submission]:
     return item2, sub2
 
 
-def make_defective(sub: Submission, defect_type: str, rng: random.Random) -> Submission:
-    """Apply one defect to a clean submission."""
+def make_item_defective(sub: Submission, defect_type: str, rng: random.Random) -> Submission:
+    """Apply an item-scoped defect (RUSHED / SELF_CONTRADICTION) to a clean submission."""
     if defect_type == "RUSHED":
         text = rng.choice(RUSHED_TEXTS).format(v=sub.vote)
         return sub.model_copy(update={
             "justification": text, "is_defective": True, "defect_type": "RUSHED",
-        })
-    if defect_type == "BOILERPLATE":
-        return sub.model_copy(update={
-            "justification": BOILERPLATE_TEXT,
-            "is_defective": True, "defect_type": "BOILERPLATE",
-        })
-    if defect_type == "POSITION_BIAS":
-        # Vote forced to A regardless of content. When the gold vote was
-        # already A this defect is nearly invisible by construction — that
-        # shows up honestly in recall-by-type.
-        return sub.model_copy(update={
-            "vote": "A",
-            "justification": rng.choice(POSITION_BIAS_TEXTS),
-            "is_defective": True, "defect_type": "POSITION_BIAS",
         })
     if defect_type == "SELF_CONTRADICTION":
         # Vote unchanged; justification argues for the OTHER response.
@@ -93,37 +83,41 @@ def make_defective(sub: Submission, defect_type: str, rng: random.Random) -> Sub
             "justification": swap_letters(sub.justification),
             "is_defective": True, "defect_type": "SELF_CONTRADICTION",
         })
-    raise ValueError(f"unknown defect type: {defect_type}")
+    raise ValueError(f"not an item-scoped defect type: {defect_type}")
 
 
-def plan_injection(item_ids: list[str], seed: int = SEED,
-                   fraction: float = DEFECT_FRACTION) -> dict[str, str]:
-    """Deterministic plan: item_id -> defect_type for the injected subset."""
-    rng = random.Random(seed)
-    ordered = sorted(item_ids)
-    n_defects = int(len(ordered) * fraction)
-    chosen = rng.sample(ordered, n_defects)
+def plan_item_injection(clean_item_ids: list[str], seed: int = SEED,
+                        fraction: float = ITEM_DEFECT_FRACTION) -> dict[str, str]:
+    """Deterministic item_id -> RUSHED|SELF_CONTRADICTION over clean-annotator items."""
+    rng = random.Random(seed + 3)
+    ordered = sorted(clean_item_ids)
+    n = int(len(ordered) * fraction)
+    chosen = rng.sample(ordered, n)
     rng.shuffle(chosen)
-    return {item_id: DEFECT_TYPES[i % len(DEFECT_TYPES)] for i, item_id in enumerate(chosen)}
+    return {item_id: ITEM_DEFECT_TYPES[i % 2] for i, item_id in enumerate(chosen)}
 
 
-def inject(con: duckdb.DuckDBPyConnection, seed: int = SEED,
-           fraction: float = DEFECT_FRACTION) -> dict[str, int]:
-    """Inject defects into the submissions table; record ground truth in `defects`.
+def inject_item_defects(con: duckdb.DuckDBPyConnection, seed: int = SEED) -> dict[str, int]:
+    """Inject RUSHED / SELF_CONTRADICTION into clean-annotator items.
 
-    Idempotent: if the defects table is already populated, do nothing.
-    Returns counts by defect type.
+    Runs after submission generation. Idempotent: skips if item-scoped
+    defects already exist. Returns counts by type.
     """
-    existing = con.execute("SELECT count(*) FROM defects").fetchone()[0]
+    existing = con.execute(
+        "SELECT count(*) FROM defects WHERE scope='item'"
+    ).fetchone()[0]
     if existing > 0:
-        rows = con.execute(
-            "SELECT defect_type, count(*) FROM defects GROUP BY defect_type"
-        ).fetchall()
-        return dict(rows)
+        return dict(con.execute(
+            "SELECT defect_type, count(*) FROM defects WHERE scope='item' GROUP BY 1"
+        ).fetchall())
 
-    item_ids = [r[0] for r in con.execute("SELECT item_id FROM submissions").fetchall()]
-    plan = plan_injection(item_ids, seed=seed, fraction=fraction)
-    rng = random.Random(seed + 1)
+    clean_ids = [r[0] for r in con.execute("""
+        SELECT s.item_id FROM submissions s
+        JOIN annotators a USING (annotator_id)
+        WHERE NOT a.is_defective
+    """).fetchall()]
+    plan = plan_item_injection(clean_ids, seed=seed)
+    rng = random.Random(seed + 4)
 
     counts: dict[str, int] = {}
     for item_id in sorted(plan):
@@ -131,14 +125,24 @@ def inject(con: duckdb.DuckDBPyConnection, seed: int = SEED,
         cur = con.execute("SELECT * FROM submissions WHERE item_id=?", [item_id])
         cols = [d[0] for d in cur.description]
         sub = Submission(**dict(zip(cols, cur.fetchone())))
-        bad = make_defective(sub, defect_type, rng)
+        bad = make_item_defective(sub, defect_type, rng)
         con.execute(
-            "INSERT OR REPLACE INTO submissions VALUES (?,?,?,?,?)",
-            [bad.item_id, bad.vote, bad.justification, bad.is_defective, bad.defect_type],
+            "INSERT OR REPLACE INTO submissions VALUES (?,?,?,?,?,?)",
+            [bad.item_id, bad.annotator_id, bad.vote, bad.justification,
+             bad.is_defective, bad.defect_type],
         )
         con.execute(
-            "INSERT INTO defects (item_id, defect_type) VALUES (?,?)",
+            "INSERT INTO defects (item_id, defect_type, scope) VALUES (?,?, 'item')",
             [item_id, defect_type],
         )
         counts[defect_type] = counts.get(defect_type, 0) + 1
     return counts
+
+
+def record_annotator_defect(con: duckdb.DuckDBPyConnection, item_id: str,
+                            defect_type: str) -> None:
+    """Item-level ground-truth row for an item owned by a defective annotator."""
+    con.execute(
+        "INSERT OR REPLACE INTO defects (item_id, defect_type, scope) VALUES (?,?, 'annotator')",
+        [item_id, defect_type],
+    )

@@ -1,56 +1,62 @@
-"""Precision/recall math on a fixture with known labels."""
+"""Precision/recall math on a fixture with known labels, escalation included."""
 
 import pytest
 
 from second_reader.evals import flag_metrics
 from second_reader.router import acceptance_score, route_label
 
-# 10 items, scores hand-picked so every count below is checkable by eye.
-# Flag decision: score <= LOW. Review band: LOW < score < HIGH.
+# 12 items, scores hand-picked so every count below is checkable by eye.
+# Flag decision: not escalated and score <= LOW. Review: escalated or in band.
 FIXTURE = [
-    {"score": 0.05, "is_defective": True,  "defect_type": "RUSHED"},            # flagged TP
-    {"score": 0.10, "is_defective": True,  "defect_type": "RUSHED"},            # flagged TP
-    {"score": 0.15, "is_defective": True,  "defect_type": "BOILERPLATE"},       # flagged TP
-    {"score": 0.20, "is_defective": False, "defect_type": None},                # flagged FP
-    {"score": 0.50, "is_defective": True,  "defect_type": "POSITION_BIAS"},     # review (missed)
-    {"score": 0.55, "is_defective": True,  "defect_type": "SELF_CONTRADICTION"},# review (missed)
-    {"score": 0.60, "is_defective": False, "defect_type": None},                # review
-    {"score": 0.85, "is_defective": False, "defect_type": None},                # accepted
-    {"score": 0.90, "is_defective": True,  "defect_type": "POSITION_BIAS"},     # accepted (missed)
-    {"score": 0.95, "is_defective": False, "defect_type": None},                # accepted
+    {"score": 0.05, "escalated": False, "is_defective": True,  "defect_type": "RUSHED"},             # flagged TP
+    {"score": 0.10, "escalated": False, "is_defective": True,  "defect_type": "RUSHED"},             # flagged TP
+    {"score": 0.15, "escalated": False, "is_defective": True,  "defect_type": "BOILERPLATE"},        # flagged TP
+    {"score": 0.20, "escalated": False, "is_defective": False, "defect_type": None},                 # flagged FP
+    {"score": None, "escalated": True,  "is_defective": True,  "defect_type": "SELF_CONTRADICTION"}, # escalated (caught, not flagged)
+    {"score": None, "escalated": True,  "is_defective": False, "defect_type": None},                 # escalated clean
+    {"score": 0.50, "escalated": False, "is_defective": True,  "defect_type": "POSITION_BIAS"},      # review (missed)
+    {"score": 0.55, "escalated": False, "is_defective": True,  "defect_type": "SELF_CONTRADICTION"}, # review (missed)
+    {"score": 0.60, "escalated": False, "is_defective": False, "defect_type": None},                 # review
+    {"score": 0.85, "escalated": False, "is_defective": False, "defect_type": None},                 # accepted
+    {"score": 0.90, "escalated": False, "is_defective": True,  "defect_type": "POSITION_BIAS"},      # accepted (missed)
+    {"score": 0.95, "escalated": False, "is_defective": False, "defect_type": None},                 # accepted
 ]
 
 
 class TestFlagMetrics:
     def test_known_precision_recall(self):
         m = flag_metrics(FIXTURE, high=0.75, low=0.25)
-        # flagged = 4 items (scores <= 0.25), 3 truly defective
-        assert m["n_flagged"] == 4
+        assert m["n_flagged"] == 4              # scores <= 0.25, not escalated
+        assert m["n_escalated"] == 2
         assert m["precision"] == pytest.approx(3 / 4)
-        # 6 true defects, 3 caught
-        assert m["recall"] == pytest.approx(3 / 6)
-        # review band (0.25, 0.75): scores 0.50, 0.55, 0.60
-        assert m["review_load"] == pytest.approx(3 / 10)
+        assert m["recall"] == pytest.approx(3 / 7)       # 7 true defects, 3 flagged
+        assert m["catch_rate"] == pytest.approx(4 / 7)   # + 1 escalated defect
+        # review band: 2 escalated + scores 0.50, 0.55, 0.60
+        assert m["review_load"] == pytest.approx(5 / 12)
 
     def test_recall_by_type_not_averaged_away(self):
         m = flag_metrics(FIXTURE, high=0.75, low=0.25)
         by = m["recall_by_type"]
-        assert by["RUSHED"] == pytest.approx(1.0)          # 2/2
-        assert by["BOILERPLATE"] == pytest.approx(1.0)     # 1/1
-        assert by["POSITION_BIAS"] == pytest.approx(0.0)   # 0/2
-        assert by["SELF_CONTRADICTION"] == pytest.approx(0.0)  # 0/1
+        assert by["RUSHED"] == pytest.approx(1.0)              # 2/2
+        assert by["BOILERPLATE"] == pytest.approx(1.0)         # 1/1
+        assert by["POSITION_BIAS"] == pytest.approx(0.0)       # 0/2
+        assert by["SELF_CONTRADICTION"] == pytest.approx(0.0)  # 0/2 flagged
+        catch = m["catch_by_type"]
+        assert catch["SELF_CONTRADICTION"] == pytest.approx(1 / 2)  # escalation caught one
 
     def test_no_flags_gives_none_precision(self):
         m = flag_metrics(FIXTURE, high=0.75, low=0.01)
         assert m["n_flagged"] == 0
         assert m["precision"] is None
         assert m["recall"] == pytest.approx(0.0)
+        assert m["catch_rate"] == pytest.approx(1 / 7)  # escalated defect still caught
 
     def test_flag_everything(self):
         m = flag_metrics(FIXTURE, high=0.99, low=0.98)
-        assert m["n_flagged"] == 10
+        assert m["n_flagged"] == 10                       # all except 2 escalated
         assert m["precision"] == pytest.approx(6 / 10)
-        assert m["recall"] == pytest.approx(1.0)
+        assert m["recall"] == pytest.approx(6 / 7)
+        assert m["catch_rate"] == pytest.approx(1.0)
 
 
 class TestAcceptanceScore:

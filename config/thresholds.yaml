@@ -6,11 +6,18 @@
 #
 # score >= high  -> auto-accept
 # score <= low   -> auto-reject (FLAGGED)
-# otherwise      -> human review queue
+# otherwise      -> human review queue (THRESHOLD_ROUTED)
+# An agent flag_for_review call overrides everything -> human review (AGENT_ESCALATED)
 routing:
   high: 0.75
   low: 0.35
   flip_penalty: 0.6
+
+# Agent loop control.
+agent:
+  max_tool_calls: 6        # evidence-gathering calls per item; then verdict is forced
+  truncate_chars: 200      # responses are truncated to this in the starting context
+  history_limit: 10        # rows returned by get_annotator_history
 
 # Calibration sweep grid. Every (high, low) pair with high > low is evaluated.
 sweep:

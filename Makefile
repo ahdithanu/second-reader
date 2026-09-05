@@ -7,13 +7,13 @@ setup:
 	uv pip install -e ".[dev]"
 
 run:
-	$(PY) -m second_reader run --items 300
+	$(PY) -m second_reader run --items 150 --tools both
 
 mock:
-	$(PY) -m second_reader run --items 300 --mock
+	$(PY) -m second_reader run --items 150 --tools both --mock
 
 test:
 	$(PY) -m pytest -q
 
 clean-results:
-	rm -f results/calibration.csv results/metrics.md
+	rm -f results/calibration.csv results/metrics.md results/example_trace.json

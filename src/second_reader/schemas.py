@@ -6,9 +6,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+DefectType = Literal["RUSHED", "BOILERPLATE", "POSITION_BIAS", "SELF_CONTRADICTION"]
+
 
 class GraderOutput(BaseModel):
-    """Structured verdict from one grader call. Never valid without a reason."""
+    """Structured verdict from one grader run. Never valid without a reason."""
 
     dimension_scores: dict[str, int]
     verdict: Literal["accept", "reject"]
@@ -41,16 +43,23 @@ class GraderOutput(BaseModel):
             )
 
 
+class Annotator(BaseModel):
+    """A synthetic annotator. Defects at this level span ALL their items."""
+
+    annotator_id: str
+    is_defective: bool = False
+    defect_type: Literal["BOILERPLATE", "POSITION_BIAS"] | None = None
+
+
 class Submission(BaseModel):
     """An annotator submission: a vote plus a written justification."""
 
     item_id: str
+    annotator_id: str
     vote: Literal["A", "B"]
     justification: str
     is_defective: bool = False
-    defect_type: (
-        Literal["RUSHED", "BOILERPLATE", "POSITION_BIAS", "SELF_CONTRADICTION"] | None
-    ) = None
+    defect_type: DefectType | None = None
 
 
 class Item(BaseModel):
