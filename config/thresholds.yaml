@@ -1,0 +1,25 @@
+# Routing thresholds operate on the acceptance score in [0, 1]:
+#   score = confidence            if verdict == accept
+#   score = 1 - confidence        if verdict == reject
+# then pulled toward 0.5 when the order-swap verdict flipped:
+#   score = 0.5 + (score - 0.5) * (1 - flip_penalty)
+#
+# score >= high  -> auto-accept
+# score <= low   -> auto-reject (FLAGGED)
+# otherwise      -> human review queue
+routing:
+  high: 0.75
+  low: 0.35
+  flip_penalty: 0.6
+
+# Calibration sweep grid. Every (high, low) pair with high > low is evaluated.
+sweep:
+  high: [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
+  low: [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
+
+model: claude-sonnet-4-5
+# USD per million tokens (input, output) used for logged cost.
+pricing:
+  claude-sonnet-4-5:
+    input: 3.0
+    output: 15.0

@@ -1,0 +1,37 @@
+version: rubric_v1
+description: >
+  Rubric for grading a pairwise-preference annotation: an annotator's vote
+  (Response A or Response B is better) plus a written justification.
+  The grader scores each dimension 0-5 and returns an overall verdict.
+dimensions:
+  decision_plausibility:
+    weight: 0.35
+    description: >
+      Given the question and both responses, is the annotator's vote a
+      defensible reading of which response is better? 5 = clearly correct,
+      3 = arguable either way, 0 = the vote contradicts obvious quality
+      differences between the responses.
+  justification_alignment:
+    weight: 0.30
+    description: >
+      Does the written justification actually argue for the response the
+      annotator voted for? 5 = fully aligned, 0 = the justification argues
+      for the opposite response or is unrelated to the vote.
+  specificity:
+    weight: 0.20
+    description: >
+      Does the justification cite concrete, checkable properties of the
+      responses (facts, structure, errors, completeness), or is it generic
+      praise that could apply to any pair? 5 = specific and grounded,
+      0 = pure boilerplate.
+  effort:
+    weight: 0.15
+    description: >
+      Does the justification show the annotator engaged with both responses?
+      5 = engages with both, 2 = engages with one, 0 = one-line dismissal
+      with no evidence of reading either response.
+verdict_rule: >
+  accept if the submission looks like a good-faith, content-grounded judgment;
+  reject if it shows signs of rushing, template reuse, position bias, or a
+  vote/justification mismatch. Confidence expresses how sure you are in the
+  verdict, not in the annotator's vote.
