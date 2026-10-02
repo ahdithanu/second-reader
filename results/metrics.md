@@ -12,6 +12,39 @@
 
 [tools OFF] precision 84.5%, review load 6.0%, escalated 0. [tools ON] precision 79.7%, review load 26.7%, escalated 23. [ON + verifier] precision 89.8%, review load 49.3%, escalated 23.
 
+## Layer 0: annotator aggregates ($0, deterministic)
+
+| Annotator | Items | Side ratio | Dup ratio | Flag |
+|---|---|---|---|---|
+| ann_00 | 12 | 0.58 | 0.08 | — |
+| ann_01 | 8 | 0.50 | 0.12 | — |
+| ann_02 | 9 | 0.56 | 0.11 | — |
+| ann_03 | 10 | 0.90 | 0.10 | — |
+| ann_04 | 9 | 1.00 | 0.11 | constant_side |
+| ann_05 | 11 | 0.55 | 0.09 | — |
+| ann_06 | 10 | 0.50 | 0.10 | — |
+| ann_07 | 10 | 0.60 | 0.10 | — |
+| ann_08 | 10 | 0.50 | 0.10 | — |
+| ann_09 | 11 | 0.73 | 0.09 | — |
+| ann_10 | 11 | 0.55 | 0.09 | — |
+| ann_11 | 9 | 1.00 | 0.11 | constant_side |
+| ann_12 | 10 | 0.70 | 0.10 | — |
+| ann_13 | 11 | 0.73 | 1.00 | justification_reuse |
+| ann_14 | 9 | 0.67 | 1.00 | justification_reuse |
+
+| Arm | Recall | Catch | Precision | Review load | Cost / 1k |
+|---|---|---|---|---|---|
+| tools OFF alone | 74.2% | 74.2% | 84.5% | 6.0% | $23.00 |
+| tools OFF + aggregates | 100.0% | 100.0% | 88.0% | 4.0% | $23.00 |
+
+Recall moved (tools OFF + aggregates): BOILERPLATE 85.0%→100.0%, POSITION_BIAS 22.2%→100.0%.
+
+| tools ON alone | 71.2% | 84.8% | 79.7% | 26.7% | $74.77 |
+| tools ON + aggregates | 92.4% | 100.0% | 83.6% | 22.7% | $74.77 |
+
+Recall moved (tools ON + aggregates): POSITION_BIAS 22.2%→100.0%.
+
+
 ## Tool-use metrics
 
 ```json

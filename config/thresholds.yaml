@@ -27,6 +27,19 @@ verifier:
   max_tool_calls: 3
   overturn_penalty: 0.4
 
+# Layer 0: deterministic annotator-level aggregates, computed from the
+# submissions table alone (no model calls, no ground truth). An annotator is
+# flagged when, over at least min_items submissions:
+#   side_ratio >= side_ratio_flag   (share of votes on their most-voted side)
+#   dup_ratio  >= dup_ratio_flag    (share of items sharing their most-reused
+#                                    justification, exact match after
+#                                    whitespace normalization)
+# A flagged annotator's items are all routed to auto-reject.
+aggregates:
+  min_items: 8
+  side_ratio_flag: 0.95
+  dup_ratio_flag: 0.5
+
 # Calibration sweep grid. Every (high, low) pair with high > low is evaluated.
 sweep:
   high: [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]

@@ -65,6 +65,40 @@ Three findings worth the price of the project:
    worse review load and precision, for 62% more money. Kept in the results
    because a portfolio about measurement should show a layer that didn't pay.
 
+## The hill-climb: closing the position-bias gap for $0
+
+The failure inventory said it, so we built it: pattern defects need
+annotator-level evidence, not smarter per-item grading. **Layer 0** computes
+two deterministic signals per annotator from the submissions table alone —
+share of votes on their most-voted side, and share of items reusing their
+most-repeated justification — and auto-rejects every item of a flagged
+annotator. No model calls. Zero added cost. Thresholds in
+[config/thresholds.yaml](config/thresholds.yaml); reproduce with
+`python -m second_reader aggregates`.
+
+It flagged exactly the 4 planted defective annotators, with zero false
+positives (the closest clean annotator sits at 0.90 side-ratio, under the
+0.95 threshold). The numbers moved:
+
+| System | Recall | Catch | Precision | Review load | Cost / 1k |
+|---|---|---|---|---|---|
+| Single call alone | 74.2% | 74.2% | 84.5% | 6.0% | $23.00 |
+| **Single call + Layer 0** | **100.0%** | **100.0%** | **88.0%** | **4.0%** | **$23.00** |
+| Agent alone | 71.2% | 84.8% | 79.7% | 26.7% | $74.77 |
+| Agent + Layer 0 | 92.4% | 100.0% | 83.6% | 22.7% | $74.77 |
+
+POSITION_BIAS: 22.2% → 100%. BOILERPLATE: 85% → 100% on the cheap arm. And
+the conclusion that revises this project's own earlier headline: **the best
+measured system is now the cheapest one** — a single call plus free SQL beats
+the agent on every axis at this defect taxonomy. The agent's remaining edge
+is triage quality on item-local ambiguity, not pattern detection.
+
+Stated honestly: 100% is partly by construction. The planted annotator
+defects are *total* (every item of a defective annotator), which is exactly
+what aggregation sees best. An annotator defective on 3 of 10 items sits
+below these thresholds — failure mode 5 is unchanged, and measuring the
+detection-threshold curve on partial-rate defectors is the next experiment.
+
 ## What the tool loop does and does not help with
 
 - **Helps**: BOILERPLATE (85%→100%: history turns "suspiciously generic"
@@ -208,11 +242,14 @@ with tokens, latency, and cost.
 
 Things the system provably does not catch, each reproducible from the CLI:
 
-1. **Position bias, mostly.** 10 of 18 POSITION_BIAS items passed both the
-   flag and escalation paths in the agent arm — the grader holds the
-   annotator's all-A history in hand and still won't convict a
-   defensible-looking single vote on pattern evidence.
-   `python -m second_reader report --mode agent --defect POSITION_BIAS`
+1. **Position bias per-item — CLOSED by Layer 0.** 10 of 18 POSITION_BIAS
+   items passed both the flag and escalation paths in the agent arm; the
+   grader holds the annotator's all-A history and still won't convict a
+   single defensible-looking vote on pattern evidence. The fix wasn't a
+   smarter grader — it was annotator-level aggregation (see the hill-climb
+   section): 22.2% → 100% for $0. Kept here as the project's one completed
+   loop: measured miss → named cause → shipped fix → number moved.
+   `python -m second_reader aggregates`
 2. **The agent under-flags what it could auto-reject.** 2 RUSHED and 3
    SELF_CONTRADICTION items that the single call flagged outright were
    escalated instead by the agent — caught, but at human cost. Compare:
@@ -231,12 +268,10 @@ Things the system provably does not catch, each reproducible from the CLI:
 
 ## Known coverage gaps and what I'd build next
 
-- **Annotator-level verdicts.** The evidence exists in the tools; the system
-  still judges items. Aggregating per-annotator (side-vote ratio, template
-  entropy, defect rate) and flagging *workers* is the natural fix for
-  failure modes 1 and 5, and cheaper than per-item agency.
-- **Cross-item dedup before any model call** — a hash over justifications
-  catches verbatim boilerplate for free; spend the agent budget on hard cases.
+- **Partial-rate defective annotators.** Layer 0 (shipped — see the
+  hill-climb) catches *total* pattern defects; an annotator boilerplating 3
+  items in 10 defeats its thresholds. Inject mixed-rate annotators and
+  measure the detection-threshold curve — the natural follow-up experiment.
 - **A targeted verifier** — reviewing only the review band and near-threshold
   flags (instead of all 300 runs) keeps its precision gain at a fraction of
   its cost; the all-items version measured here is the expensive baseline.

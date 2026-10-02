@@ -39,6 +39,9 @@ class Thresholds:
     history_limit: int
     verifier_max_tool_calls: int
     verifier_overturn_penalty: float
+    agg_min_items: int
+    agg_side_ratio_flag: float
+    agg_dup_ratio_flag: float
     sweep_high: list[float]
     sweep_low: list[float]
     model: str
@@ -58,7 +61,7 @@ def load_rubric(path: Path | None = None) -> Rubric:
 def load_thresholds(path: Path | None = None) -> Thresholds:
     path = path or (CONFIG_DIR / "thresholds.yaml")
     raw = yaml.safe_load(path.read_text())
-    r, a, v = raw["routing"], raw["agent"], raw["verifier"]
+    r, a, v, g = raw["routing"], raw["agent"], raw["verifier"], raw["aggregates"]
     return Thresholds(
         high=float(r["high"]),
         low=float(r["low"]),
@@ -68,6 +71,9 @@ def load_thresholds(path: Path | None = None) -> Thresholds:
         history_limit=int(a["history_limit"]),
         verifier_max_tool_calls=int(v["max_tool_calls"]),
         verifier_overturn_penalty=float(v["overturn_penalty"]),
+        agg_min_items=int(g["min_items"]),
+        agg_side_ratio_flag=float(g["side_ratio_flag"]),
+        agg_dup_ratio_flag=float(g["dup_ratio_flag"]),
         sweep_high=[float(x) for x in raw["sweep"]["high"]],
         sweep_low=[float(x) for x in raw["sweep"]["low"]],
         model=raw["model"],

@@ -89,7 +89,7 @@ def scored_records(con: duckdb.DuckDBPyConnection, rubric_version: str,
         SELECT o.item_id, o.verdict, o.confidence,
                (o.verdict IS NOT NULL AND s.verdict IS NOT NULL AND o.verdict != s.verdict),
                (o.escalated OR s.escalated),
-               sub.is_defective, sub.defect_type
+               sub.is_defective, sub.defect_type, sub.annotator_id
         FROM grades o
         JOIN grades s ON s.item_id = o.item_id AND s.rubric_version = o.rubric_version
                      AND s.mode = o.mode AND s.order_label = 'swapped'
@@ -107,8 +107,9 @@ def scored_records(con: duckdb.DuckDBPyConnection, rubric_version: str,
             "escalated": bool(escalated),
             "is_defective": bool(is_def),
             "defect_type": defect_type,
+            "annotator_id": annotator_id,
         }
-        for item_id, verdict, conf, flipped, escalated, is_def, defect_type in rows
+        for item_id, verdict, conf, flipped, escalated, is_def, defect_type, annotator_id in rows
     ]
 
 
@@ -263,6 +264,68 @@ def tool_metrics(con: duckdb.DuckDBPyConnection, thresholds: Thresholds,
     return result
 
 
+def aggregates_section(con: duckdb.DuckDBPyConnection, thresholds: Thresholds,
+                       rubric_version: str) -> str:
+    """Layer 0 report: per-annotator signals, flags, and combined metrics.
+
+    Combined arms overlay the $0 aggregate flags on an existing arm's
+    per-item records; the base arm's grading cost is unchanged.
+    """
+    from .aggregates import annotator_stats, apply_to_records, flagged_annotators
+
+    stats = annotator_stats(con, thresholds)
+    flagged = flagged_annotators(con, thresholds)
+
+    lines = [
+        "| Annotator | Items | Side ratio | Dup ratio | Flag |",
+        "|---|---|---|---|---|",
+    ]
+    for s in stats:
+        lines.append(
+            f"| {s.annotator_id} | {s.n_items} | {s.side_ratio:.2f} "
+            f"| {s.dup_ratio:.2f} | {s.reason or '—'} |"
+        )
+    lines.append("")
+
+    header_done = False
+    for base in ("single", "agent"):
+        records = scored_records(con, rubric_version, thresholds.flip_penalty, base)
+        if not records:
+            continue
+        before = flag_metrics(records, thresholds.high, thresholds.low)
+        combined = apply_to_records(records, flagged)
+        after = flag_metrics(combined, thresholds.high, thresholds.low)
+        if not header_done:
+            lines.append(
+                "| Arm | Recall | Catch | Precision | Review load | Cost / 1k |")
+            lines.append("|---|---|---|---|---|---|")
+            header_done = True
+        cost = arm_cost(con, base) / len(records) * 1000
+        lines.append(
+            f"| {MODE_LABELS.get(base, base)} alone "
+            f"| {_fmt(before['recall'], pct=True)} | {_fmt(before['catch_rate'], pct=True)} "
+            f"| {_fmt(before['precision'], pct=True)} | {_fmt(before['review_load'], pct=True)} "
+            f"| ${cost:.2f} |"
+        )
+        lines.append(
+            f"| {MODE_LABELS.get(base, base)} + aggregates "
+            f"| {_fmt(after['recall'], pct=True)} | {_fmt(after['catch_rate'], pct=True)} "
+            f"| {_fmt(after['precision'], pct=True)} | {_fmt(after['review_load'], pct=True)} "
+            f"| ${cost:.2f} |"
+        )
+        by_before, by_after = before["recall_by_type"], after["recall_by_type"]
+        deltas = ", ".join(
+            f"{dt} {_fmt(by_before[dt], pct=True)}→{_fmt(by_after[dt], pct=True)}"
+            for dt in DEFECT_TYPES
+            if by_before[dt] is not None and by_before[dt] != by_after[dt]
+        )
+        if deltas:
+            lines.append("")
+            lines.append(f"Recall moved ({MODE_LABELS.get(base, base)} + aggregates): {deltas}.")
+            lines.append("")
+    return "\n".join(lines)
+
+
 def escalation_report(con: duckdb.DuckDBPyConnection, thresholds: Thresholds,
                       rubric_version: str) -> dict:
     """Compare the two escalation paths for the agent mode.
@@ -337,6 +400,8 @@ def render_markdown(df: pl.DataFrame, con: duckdb.DuckDBPyConnection,
     parts = ["# second-reader metrics", "",
              "## Ablation: recall by defect type, tools on vs off (operating point)",
              "", ablation_table(con, thresholds, rubric_version), "",
+             "## Layer 0: annotator aggregates ($0, deterministic)", "",
+             aggregates_section(con, thresholds, rubric_version), "",
              "## Tool-use metrics", "",
              "```json",
              json.dumps(tool_metrics(con, thresholds, rubric_version), indent=2),

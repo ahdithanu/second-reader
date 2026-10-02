@@ -37,6 +37,9 @@ def main() -> None:
     ann_p = sub.add_parser("annotators", help="list annotators with defect truth and item counts")
     ann_p.add_argument("--mock", action="store_true", help="read the mock-run DB")
 
+    agg_p = sub.add_parser("aggregates", help="layer-0 annotator aggregates: signals, flags, combined metrics")
+    agg_p.add_argument("--mock", action="store_true", help="read the mock-run DB")
+
     args = p.parse_args()
 
     if args.cmd == "run":
@@ -92,6 +95,11 @@ def main() -> None:
             print(f"\nMISSED {args.defect} items in mode={args.mode} (score above LOW={thresholds.low}):")
             for r in missed:
                 print(f"  {r['item_id']}  score={r['score']:.2f}")
+        return
+
+    if args.cmd == "aggregates":
+        from .evals import aggregates_section
+        print(aggregates_section(con, thresholds, rubric.version))
         return
 
     if args.cmd == "annotators":
