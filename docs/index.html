@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second Reader — measured AI QA of human training data</title>
+<meta name="description" content="A QA layer that grades human-produced AI training data, with precision and recall published on every decision: 3-arm ablation, 900 graded runs, $22.12, hill-climb to 100% catch.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400;1,8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  /* Dark-first: bare :root is the dark palette (Handshake AI world). */
+  :root {
+    color-scheme: dark;
+    --paper: #14151C;
+    --paper-raised: #1B1C26;
+    --ink: #F4F5F9;
+    --ink-soft: #B1B3CE;
+    --ink-faint: #7B7B85;
+    --rule: #333542;
+    --rule-soft: #23242E;
+    --accent: #7AF3FF;        /* electric cyan: structure + the added mechanism */
+    --bad: #FF6D5E;           /* semantic only: flags, rejects, the escalation line */
+    --accept: #52C98B;
+    --review: #E5C368;
+    --code-bg: #0E0F16;
+    --s1: #00A38F;            /* series 1: single call (validated pair) */
+    --s2: #2E6AFF;            /* series 2: agent */
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --paper: #F8F8F8; --paper-raised: #FFFFFF;
+      --ink: #14151C; --ink-soft: #434449; --ink-faint: #7B7B85;
+      --rule: #DBDCE4; --rule-soft: #ECEDF3;
+      --accent: #007C8C;
+      --bad: #C23B34;
+      --accept: #1E8A4E;
+      --review: #96761C;
+      --code-bg: #F3F4FA;
+      --s1: #0E8F6E; --s2: #2E6AFF;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --paper: #F8F8F8; --paper-raised: #FFFFFF;
+    --ink: #14151C; --ink-soft: #434449; --ink-faint: #7B7B85;
+    --rule: #DBDCE4; --rule-soft: #ECEDF3;
+    --accent: #007C8C;
+    --bad: #C23B34;
+    --accept: #1E8A4E;
+    --review: #96761C;
+    --code-bg: #F3F4FA;
+    --s1: #0E8F6E; --s2: #2E6AFF;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: 17px; line-height: 1.62; margin: 0; padding: 0 20px 96px;
+  }
+  .mono { font-family: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace; }
+  .sheet { max-width: 980px; margin: 0 auto; }
+  .prose { max-width: 700px; }
+
+  header { padding: 64px 0 8px; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", Menlo, monospace; font-size: 12px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); font-weight: 600;
+  }
+  h1 {
+    font-size: clamp(40px, 7vw, 62px); font-weight: 700; letter-spacing: -0.015em;
+    margin: 10px 0 14px; line-height: 1.02; text-wrap: balance;
+  }
+  .dek { font-size: 20px; font-style: italic; color: var(--ink-soft); max-width: 640px; margin: 0 0 34px; text-wrap: balance; }
+
+  .statstrip { display: flex; flex-wrap: wrap; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); margin-bottom: 56px; }
+  .stat { flex: 1 1 140px; padding: 16px 18px 14px; border-right: 1px solid var(--rule-soft); }
+  .stat:last-child { border-right: none; }
+  .stat b { display: block; font-family: "IBM Plex Mono", Menlo, monospace; font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .stat span { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); }
+
+  h2 { font-size: 27px; font-weight: 700; letter-spacing: -0.01em; margin: 64px 0 6px; text-wrap: balance; }
+  h2 .no { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 13px; font-weight: 500; color: var(--accent); vertical-align: 0.45em; margin-right: 8px; letter-spacing: 0.06em; }
+  .kicker { color: var(--ink-soft); font-style: italic; margin: 0 0 22px; }
+  p { margin: 0 0 18px; }
+  strong { font-weight: 600; }
+
+  figure { margin: 28px 0 8px; }
+  .figwrap { overflow-x: auto; background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 4px; padding: 22px 18px; }
+  figure svg { display: block; min-width: 760px; width: 100%; height: auto; color: var(--ink); }
+  /* SVG text does not inherit CSS color: without this, diagram text renders
+     black in the dark theme. Accent-colored labels use inline styles, which
+     outrank this rule. */
+  figure svg text { fill: currentColor; }
+  figcaption { font-size: 13.5px; color: var(--ink-faint); font-style: italic; margin-top: 10px; max-width: 700px; }
+  .svg-title { font: 600 13px "IBM Plex Mono", Menlo, monospace; }
+  .svg-sub   { font: 400 10.5px "IBM Plex Mono", Menlo, monospace; opacity: 0.85; }
+  .svg-lab   { font: 500 10px "IBM Plex Mono", Menlo, monospace; opacity: 0.8; }
+  .svg-stage { font: 600 10.5px "IBM Plex Mono", Menlo, monospace; letter-spacing: 0.12em; opacity: 0.65; }
+
+  /* ---- bar chart ---- */
+  .chart { background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 4px; padding: 24px 26px 20px; margin: 26px 0 8px; }
+  .chart-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; align-items: baseline; margin-bottom: 18px; }
+  .chart-title { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 13px; font-weight: 600; }
+  .legend { display: flex; gap: 18px; font-family: "IBM Plex Mono", Menlo, monospace; font-size: 11.5px; color: var(--ink-soft); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .l1 i { background: var(--s1); } .l2 i { background: var(--s2); }
+  .crow { display: grid; grid-template-columns: 172px 1fr; gap: 4px 14px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--rule-soft); }
+  .crow:last-of-type { border-bottom: none; }
+  .crow .clab { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 12px; color: var(--ink-soft); }
+  .crow .clab small { display: block; color: var(--ink-faint); font-size: 10.5px; }
+  .bars { display: flex; flex-direction: column; gap: 3px; }
+  .barline { position: relative; display: flex; align-items: center; gap: 10px; min-height: 14px; }
+  .bar { height: 12px; border-radius: 0 3px 3px 0; min-width: 2px; }
+  .bar.b1 { background: var(--s1); } .bar.b2 { background: var(--s2); }
+  .bval { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+  .barline[data-tip] { cursor: default; }
+  .barline[data-tip]:hover::after, .barline[data-tip]:focus-visible::after {
+    content: attr(data-tip); position: absolute; left: 0; bottom: 130%;
+    background: var(--ink); color: var(--paper);
+    font-family: "IBM Plex Mono", Menlo, monospace; font-size: 11px;
+    padding: 4px 9px; border-radius: 3px; white-space: nowrap; z-index: 3;
+  }
+  .crow.total .clab, .crow.total .bval { color: var(--ink); font-weight: 600; }
+
+  /* ---- takeaway cards ---- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 26px 0 8px; }
+  .card { background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 4px; padding: 20px 22px 18px; border-top: 3px solid var(--accent); }
+  .card b { display: block; font-family: "IBM Plex Mono", Menlo, monospace; font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 6px; font-variant-numeric: tabular-nums; }
+  .card p { font-size: 14.5px; line-height: 1.5; color: var(--ink-soft); margin: 0; }
+  .card.neg { border-top-color: var(--review); }
+
+  .tablewrap { overflow-x: auto; margin: 26px 0 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-family: "IBM Plex Mono", Menlo, monospace; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 600; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); padding: 8px 14px; border-bottom: 1.5px solid var(--ink); }
+  th.num, td.num { text-align: right; }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--rule-soft); }
+  tr.total td { border-top: 1.5px solid var(--ink); border-bottom: none; font-weight: 600; }
+  .cell-good { color: var(--accept); font-weight: 600; }
+  .cell-bad  { color: var(--bad); font-weight: 600; }
+  .cell-mid  { color: var(--review); font-weight: 600; }
+
+  .trace { background: var(--code-bg); border: 1px solid var(--rule); border-left: 3px solid var(--rule); margin: 26px 0 10px; padding: 20px 0; overflow-x: auto; }
+  .trace .tl { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 13px; padding: 3px 24px; white-space: pre; color: var(--ink-soft); }
+  .trace .tl b { color: var(--ink); font-weight: 500; }
+  .trace .tl.esc { border-left: 3px solid var(--bad); margin-left: -3px; color: var(--bad); white-space: pre-wrap; font-weight: 500; }
+  .trace .tl.dim { color: var(--ink-faint); }
+
+  .inventory { counter-reset: fm; margin: 26px 0; padding: 0; list-style: none; }
+  .inventory li { counter-increment: fm; position: relative; padding: 14px 0 14px 44px; border-bottom: 1px solid var(--rule-soft); }
+  .inventory li::before { content: counter(fm, decimal-leading-zero); position: absolute; left: 0; top: 17px; font-family: "IBM Plex Mono", Menlo, monospace; font-size: 12px; color: var(--accent); font-weight: 600; }
+  .inventory code { font-family: "IBM Plex Mono", Menlo, monospace; font-size: 12.5px; background: var(--code-bg); padding: 1px 6px; border-radius: 3px; }
+
+  .cta { margin-top: 64px; border-top: 1px solid var(--ink); padding-top: 22px; display: flex; flex-wrap: wrap; gap: 8px 40px; align-items: baseline; }
+  .cta .mono { font-size: 13px; color: var(--ink-soft); }
+  footer { margin-top: 40px; font-family: "IBM Plex Mono", Menlo, monospace; font-size: 11.5px; color: var(--ink-faint); letter-spacing: 0.04em; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: no-preference) { .bar { transition: opacity .15s; } .barline:hover .bar { opacity: .85; } }
+</style>
+</head>
+<body>
+
+
+<div class="sheet">
+  <header>
+    <div class="eyebrow">Evals infrastructure &middot; live results</div>
+    <h1>Second Reader</h1>
+    <p class="dek">A QA layer that grades human-produced AI training data, flags suspect submissions, and routes what it can't decide to people &mdash; with precision and recall published on every decision it makes.</p>
+    <div class="statstrip" role="group" aria-label="Run summary">
+      <div class="stat"><b>900</b><span>graded runs</span></div>
+      <div class="stat"><b>3</b><span>grading arms</span></div>
+      <div class="stat"><b>66/150</b><span>defective items</span></div>
+      <div class="stat"><b>$22.12</b><span>total spend, logged</span></div>
+      <div class="stat"><b>47</b><span>tests passing</span></div>
+    </div>
+  </header>
+
+  <h2><span class="no">FIG 1</span>How the test works, end to end</h2>
+  <p class="kicker prose">Real public data in, planted ground truth in the middle, measured decisions out. Everything downstream of the highlighted boxes is scored against truth we control.</p>
+  <figure>
+    <div class="figwrap">
+    <svg viewBox="0 0 960 286" role="img" aria-label="Pipeline: MT-Bench human judgments are sampled into DuckDB, synthetic annotators produce submissions with planted defects, three grading arms judge every item twice, a router splits decisions into accept, flag, and human review, and results are scored against the planted truth.">
+      <defs>
+        <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L8 4 L0 8 z" fill="currentColor"/>
+        </marker>
+        <marker id="arrp" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L8 4 L0 8 z" style="fill:var(--accent)"/>
+        </marker>
+      </defs>
+
+      <text x="10" y="18" class="svg-stage">INGEST</text>
+      <text x="505" y="18" class="svg-stage">SYNTHESIZE + PLANT TRUTH</text>
+      <text x="10" y="162" class="svg-stage">GRADE</text>
+      <text x="658" y="162" class="svg-stage">MEASURE</text>
+
+      <!-- row 1 -->
+      <rect x="10" y="30" width="145" height="76" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="82" y="56" text-anchor="middle" class="svg-title">MT-Bench</text>
+      <text x="82" y="74" text-anchor="middle" class="svg-sub">3,355 human judgments</text>
+      <text x="82" y="90" text-anchor="middle" class="svg-sub">HuggingFace</text>
+
+      <line x1="155" y1="68" x2="253" y2="68" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="204" y="58" text-anchor="middle" class="svg-lab">turn-1, no ties</text>
+
+      <rect x="255" y="30" width="150" height="76" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="330" y="56" text-anchor="middle" class="svg-title">DuckDB</text>
+      <text x="330" y="74" text-anchor="middle" class="svg-sub">150 items &middot; seed 42</text>
+      <text x="330" y="90" text-anchor="middle" class="svg-sub">218 peer votes</text>
+
+      <line x1="405" y1="68" x2="503" y2="68" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="454" y="58" text-anchor="middle" class="svg-lab">8&ndash;12 items each</text>
+
+      <rect x="505" y="30" width="180" height="76" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="595" y="61" text-anchor="middle" class="svg-title">15 annotators</text>
+      <text x="595" y="81" text-anchor="middle" class="svg-sub" style="fill:var(--accent)">4 secretly defective</text>
+
+      <line x1="685" y1="68" x2="773" y2="68" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="729" y="58" text-anchor="middle" class="svg-lab">vote+rationale</text>
+
+      <rect x="775" y="30" width="175" height="76" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="862" y="56" text-anchor="middle" class="svg-title">150 submissions</text>
+      <text x="862" y="74" text-anchor="middle" class="svg-sub" style="fill:var(--accent)">66 defect-labeled</text>
+      <text x="862" y="90" text-anchor="middle" class="svg-sub" style="fill:var(--accent)">= ground truth</text>
+
+      <!-- connector down to row 2 -->
+      <path d="M 862 106 V 136 H 120 V 168" fill="none" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="491" y="129" text-anchor="middle" class="svg-lab">every item, to every arm</text>
+
+      <!-- row 2 -->
+      <rect x="10" y="172" width="220" height="76" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="120" y="199" text-anchor="middle" class="svg-title">3 grading arms</text>
+      <text x="120" y="217" text-anchor="middle" class="svg-sub">call &middot; agent &middot; agent+verifier</text>
+      <text x="120" y="233" text-anchor="middle" class="svg-sub">&times;2 A/B orders = 900 runs</text>
+
+      <line x1="230" y1="210" x2="292" y2="210" stroke="currentColor" marker-end="url(#arr)"/>
+      <text x="261" y="199" text-anchor="middle" class="svg-lab">score 0&ndash;1</text>
+
+      <rect x="294" y="172" width="300" height="76" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="444" y="197" text-anchor="middle" class="svg-title">Router</text>
+      <text x="444" y="216" text-anchor="middle" class="svg-sub">&ge;0.75 accept &middot; &le;0.35 flag &middot; between: human</text>
+      <text x="444" y="233" text-anchor="middle" class="svg-sub">agent may also escalate directly</text>
+
+      <line x1="594" y1="210" x2="656" y2="210" stroke="var(--accent)" marker-end="url(#arrp)"/>
+      <text x="625" y="199" text-anchor="middle" class="svg-lab" style="fill:var(--accent)">scored</text>
+
+      <rect x="658" y="172" width="292" height="76" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="804" y="199" text-anchor="middle" class="svg-title">Precision &middot; recall &middot; cost</text>
+      <text x="804" y="217" text-anchor="middle" class="svg-sub">vs planted truth, per defect type, per arm</text>
+      <text x="804" y="233" text-anchor="middle" class="svg-sub">189-config threshold sweep</text>
+    </svg>
+    </div>
+    <figcaption>The measurement loop: defects are planted with known labels (the cyan-outlined boxes), so when an arm flags or misses a submission, that decision is scored &mdash; not vibes-checked.</figcaption>
+  </figure>
+
+  <h2><span class="no">FIG 2</span>Three levels of agency, same items</h2>
+  <p class="kicker prose">The ablation is the experiment: each arm adds one mechanism (in cyan) on top of the last, and the metrics isolate what that mechanism is worth.</p>
+  <figure>
+    <div class="figwrap">
+    <svg viewBox="0 0 960 392" role="img" aria-label="Three grading arms compared. Arm 1: a single Claude call on truncated context emits a verdict. Arm 2 adds an agent loop with three DuckDB tools under a six-call budget, and a new escalation path to a human. Arm 3 adds an adversarial verifier that attacks the agent's verdict and upholds or overturns it.">
+      <defs>
+        <marker id="arr2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L8 4 L0 8 z" fill="currentColor"/>
+        </marker>
+        <marker id="arrp2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0 0 L8 4 L0 8 z" style="fill:var(--accent)"/>
+        </marker>
+      </defs>
+
+      <!-- ARM 1 -->
+      <text x="10" y="44" class="svg-stage">ARM 1</text>
+      <rect x="80" y="20" width="180" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="170" y="42" text-anchor="middle" class="svg-title">truncated context</text>
+      <text x="170" y="59" text-anchor="middle" class="svg-sub">200 chars per response</text>
+      <line x1="260" y1="46" x2="330" y2="46" stroke="currentColor" marker-end="url(#arr2)"/>
+      <rect x="332" y="20" width="150" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="407" y="42" text-anchor="middle" class="svg-title">one Claude call</text>
+      <text x="407" y="59" text-anchor="middle" class="svg-sub">no tools</text>
+      <line x1="482" y1="46" x2="552" y2="46" stroke="currentColor" marker-end="url(#arr2)"/>
+      <rect x="554" y="20" width="130" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="619" y="42" text-anchor="middle" class="svg-title">verdict</text>
+      <text x="619" y="59" text-anchor="middle" class="svg-sub">accept / reject</text>
+      <text x="716" y="50" class="svg-sub">$23 / 1k &middot; 74.2% recall</text>
+
+      <line x1="10" y1="98" x2="950" y2="98" stroke="currentColor" stroke-opacity="0.15"/>
+
+      <!-- ARM 2 -->
+      <text x="10" y="204" class="svg-stage">ARM 2</text>
+
+      <!-- tools box, above the agent -->
+      <rect x="520" y="122" width="240" height="36" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="640" y="144" text-anchor="middle" class="svg-sub" style="fill:var(--accent)">history &middot; peer votes &middot; full text</text>
+
+      <!-- main row -->
+      <rect x="80" y="180" width="180" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="170" y="202" text-anchor="middle" class="svg-title">truncated context</text>
+      <text x="170" y="219" text-anchor="middle" class="svg-sub">same starting blindness</text>
+      <line x1="260" y1="206" x2="330" y2="206" stroke="currentColor" marker-end="url(#arr2)"/>
+      <rect x="332" y="180" width="150" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="407" y="202" text-anchor="middle" class="svg-title">agent loop</text>
+      <text x="407" y="219" text-anchor="middle" class="svg-sub">decides what it needs</text>
+      <line x1="482" y1="206" x2="552" y2="206" stroke="currentColor" marker-end="url(#arr2)"/>
+      <rect x="554" y="180" width="130" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="619" y="202" text-anchor="middle" class="svg-title">verdict</text>
+      <text x="619" y="219" text-anchor="middle" class="svg-sub">or escalate &darr;</text>
+      <text x="716" y="210" class="svg-sub">$75 / 1k &middot; 84.8% caught</text>
+
+      <!-- tool edges (the added mechanism) -->
+      <path d="M 385 180 V 140 H 518" fill="none" stroke="var(--accent)" marker-end="url(#arrp2)"/>
+      <path d="M 545 158 V 170 H 434 V 178" fill="none" stroke="var(--accent)" marker-end="url(#arrp2)"/>
+      <text x="398" y="132" class="svg-lab" style="fill:var(--accent)">&le;6 calls, all logged</text>
+
+      <!-- escalation edge -->
+      <path d="M 407 232 V 274 H 518" fill="none" stroke="var(--accent)" marker-end="url(#arrp2)"/>
+      <text x="420" y="264" class="svg-lab" style="fill:var(--accent)">flag_for_review</text>
+      <rect x="520" y="257" width="140" height="34" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="590" y="278" text-anchor="middle" class="svg-sub" style="fill:var(--accent)">human review</text>
+
+      <line x1="10" y1="312" x2="950" y2="312" stroke="currentColor" stroke-opacity="0.15"/>
+
+      <!-- ARM 3 -->
+      <text x="10" y="360" class="svg-stage">ARM 3</text>
+      <rect x="80" y="336" width="180" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="170" y="358" text-anchor="middle" class="svg-title">arm 2's verdict</text>
+      <text x="170" y="375" text-anchor="middle" class="svg-sub">everything above, first</text>
+      <line x1="260" y1="362" x2="330" y2="362" stroke="var(--accent)" marker-end="url(#arrp2)"/>
+      <text x="295" y="351" text-anchor="middle" class="svg-lab" style="fill:var(--accent)">attacked</text>
+      <rect x="332" y="336" width="190" height="52" rx="4" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+      <text x="427" y="358" text-anchor="middle" class="svg-title">adversarial verifier</text>
+      <text x="427" y="375" text-anchor="middle" class="svg-sub" style="fill:var(--accent)">same tools, &le;3 calls</text>
+      <line x1="522" y1="362" x2="618" y2="362" stroke="var(--accent)" marker-end="url(#arrp2)"/>
+      <text x="570" y="351" text-anchor="middle" class="svg-lab" style="fill:var(--accent)">uphold/overturn</text>
+      <rect x="620" y="336" width="150" height="52" rx="4" fill="none" stroke="currentColor" stroke-opacity="0.6"/>
+      <text x="695" y="358" text-anchor="middle" class="svg-title">final verdict</text>
+      <text x="695" y="375" text-anchor="middle" class="svg-sub">overturns &rarr; review band</text>
+      <text x="784" y="366" class="svg-sub">$121 / 1k &middot; dominated</text>
+    </svg>
+    </div>
+    <figcaption>What each arm adds, in cyan. Arm 2 adds evidence-gathering and an escape hatch; arm 3 adds a second agent whose only job is to break the first one's verdict.</figcaption>
+  </figure>
+
+  <h2><span class="no">FIG 3</span>What gets caught: one call vs. the agent</h2>
+  <p class="kicker prose">Claude-sonnet-4-5, 150 items, thresholds 0.75 / 0.35. Hover a row for the raw counts.</p>
+  <div class="chart" role="figure" aria-label="Grouped bar chart of catch rate by defect type: single call versus agent including escalations.">
+    <div class="chart-head">
+      <span class="chart-title">Caught, by defect type</span>
+      <div class="legend">
+        <span class="l1"><i></i>single call (flags)</span>
+        <span class="l2"><i></i>agent (flags + escalations)</span>
+      </div>
+    </div>
+    <div class="crow">
+      <div class="clab">RUSHED<small>one-line dismissals &middot; 14 planted</small></div>
+      <div class="bars">
+        <div class="barline" tabindex="0" data-tip="single call: 14 of 14 caught"><div class="bar b1" style="width:100%"></div><span class="bval">100%</span></div>
+        <div class="barline" tabindex="0" data-tip="agent: 14 of 14 caught (2 via escalation)"><div class="bar b2" style="width:100%"></div><span class="bval">100%</span></div>
+      </div>
+    </div>
+    <div class="crow">
+      <div class="clab">BOILERPLATE<small>verbatim template reuse &middot; 20 planted</small></div>
+      <div class="bars">
+        <div class="barline" tabindex="0" data-tip="single call: 17 of 20 caught"><div class="bar b1" style="width:85%"></div><span class="bval">85%</span></div>
+        <div class="barline" tabindex="0" data-tip="agent: 20 of 20 caught"><div class="bar b2" style="width:100%"></div><span class="bval">100%</span></div>
+      </div>
+    </div>
+    <div class="crow">
+      <div class="clab">POSITION_BIAS<small>always votes A &middot; 18 planted</small></div>
+      <div class="bars">
+        <div class="barline" tabindex="0" data-tip="single call: 4 of 18 caught"><div class="bar b1" style="width:22.2%"></div><span class="bval">22%</span></div>
+        <div class="barline" tabindex="0" data-tip="agent: 8 of 18 caught (4 via escalation)"><div class="bar b2" style="width:44.4%"></div><span class="bval">44%</span></div>
+      </div>
+    </div>
+    <div class="crow">
+      <div class="clab">SELF_CONTRADICTION<small>rationale fights the vote &middot; 14 planted</small></div>
+      <div class="bars">
+        <div class="barline" tabindex="0" data-tip="single call: 14 of 14 caught"><div class="bar b1" style="width:100%"></div><span class="bval">100%</span></div>
+        <div class="barline" tabindex="0" data-tip="agent: 14 of 14 caught (3 via escalation)"><div class="bar b2" style="width:100%"></div><span class="bval">100%</span></div>
+      </div>
+    </div>
+    <div class="crow total">
+      <div class="clab">OVERALL<small>66 planted defects</small></div>
+      <div class="bars">
+        <div class="barline" tabindex="0" data-tip="single call: 49 of 66 caught"><div class="bar b1" style="width:74.2%"></div><span class="bval">74%</span></div>
+        <div class="barline" tabindex="0" data-tip="agent: 56 of 66 caught"><div class="bar b2" style="width:84.8%"></div><span class="bval">85%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2><span class="no">&sect; 4</span>Takeaways</h2>
+  <div class="cards">
+    <div class="card"><b>3&times;</b><p><strong>Agency buys triage, not automation.</strong> When the agent says "a human should see this," it's right 39% of the time &mdash; three times the hit rate of a confidence threshold saying the same thing (12%). But its review queue is 4.5&times; bigger.</p></div>
+    <div class="card"><b>$4.88</b><p><strong>Per extra catch point, per 1,000 items.</strong> The agent costs 3.25&times; the single call and buys +10.6 points of catch. The tokens are cheap; the queue of humans it summons is the real bill.</p></div>
+    <div class="card neg"><b>&minus;4.5pts</b><p><strong>The verifier is a published negative result.</strong> A second agent attacking every verdict raised precision to 89.8% &mdash; and lost catch, doubled review load, and cost 62% more. Dominated at all 63 swept configs.</p></div>
+    <div class="card"><b>44%</b><p><strong>Position bias stayed hard for every grader.</strong> Even holding the annotator's all-A voting history, no per-item grader convicts a defensible-looking single vote on pattern evidence. 10 of 18 sailed through everything&hellip;</p></div>
+    <div class="card"><b>$0 &rarr; 100%</b><p><strong>&hellip;so the hill-climb closed it without a model.</strong> Layer 0: two deterministic per-annotator signals &mdash; side-vote ratio and justification reuse &mdash; flag workers, not items. All 4 planted defective annotators caught, zero false positives. Position bias 22% &rarr; 100%; the $23/1k single call plus this free layer now beats the $75 agent on every axis.</p></div>
+  </div>
+
+  <h2><span class="no">TABLE 1</span>The full numbers</h2>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Defect type</th><th class="num">Single recall</th><th class="num">Agent recall</th><th class="num">Agent catch</th><th class="num">+Verifier recall</th><th class="num">+Verifier catch</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>RUSHED &times;14</td><td class="num cell-good">100.0%</td><td class="num">85.7%</td><td class="num cell-good">100.0%</td><td class="num">85.7%</td><td class="num cell-good">100.0%</td></tr>
+        <tr><td>BOILERPLATE &times;20</td><td class="num">85.0%</td><td class="num cell-good">100.0%</td><td class="num cell-good">100.0%</td><td class="num cell-good">100.0%</td><td class="num cell-good">100.0%</td></tr>
+        <tr><td>POSITION_BIAS &times;18</td><td class="num cell-bad">22.2%</td><td class="num cell-bad">22.2%</td><td class="num cell-mid">44.4%</td><td class="num cell-bad">16.7%</td><td class="num cell-mid">38.9%</td></tr>
+        <tr><td>SELF_CONTRADICTION &times;14</td><td class="num cell-good">100.0%</td><td class="num">78.6%</td><td class="num cell-good">100.0%</td><td class="num">64.3%</td><td class="num">85.7%</td></tr>
+        <tr class="total"><td>Overall &times;66</td><td class="num">74.2%</td><td class="num">71.2%</td><td class="num">84.8%</td><td class="num">66.7%</td><td class="num">80.3%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Arm</th><th class="num">Flag precision</th><th class="num">Review load</th><th class="num">Cost / 1k items</th></tr></thead>
+      <tbody>
+        <tr><td>Single call, no tools</td><td class="num">84.5%</td><td class="num cell-good">6.0%</td><td class="num cell-good">$23.00</td></tr>
+        <tr><td>Agent with evidence tools</td><td class="num">79.7%</td><td class="num cell-mid">26.7%</td><td class="num">$74.77</td></tr>
+        <tr><td>Agent + adversarial verifier</td><td class="num cell-good">89.8%</td><td class="num cell-bad">49.3%</td><td class="num cell-bad">$121.09</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>After the hill-climb: + Layer 0 aggregates ($0)</th><th class="num">Recall</th><th class="num">Catch</th><th class="num">Precision</th><th class="num">Review load</th><th class="num">Cost / 1k</th></tr></thead>
+      <tbody>
+        <tr><td>Single call + Layer 0</td><td class="num cell-good">100.0%</td><td class="num cell-good">100.0%</td><td class="num cell-good">88.0%</td><td class="num cell-good">4.0%</td><td class="num cell-good">$23.00</td></tr>
+        <tr><td>Agent + Layer 0</td><td class="num">92.4%</td><td class="num cell-good">100.0%</td><td class="num">83.6%</td><td class="num cell-mid">22.7%</td><td class="num">$74.77</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="kicker prose">Honestly scoped: 100% is partly by construction &mdash; planted annotator defects are total, which is exactly what aggregation sees best. Partial-rate defectors (inventory item 05) remain open. Reproduce: <span class="mono">python -m second_reader aggregates</span>.</p>
+
+  <h2><span class="no">&sect; 5</span>One verbatim trace</h2>
+  <p class="kicker prose">The agent catching a self-contradiction &mdash; item 0ca7bfac4994, exactly as stored. It reads both full responses, checks peers, pulls the annotator's history, then hands the item to a person, quoting the contradiction. All 900 runs have one; the trace is a deliverable, not a debug artifact.</p>
+  <div class="trace" role="figure" aria-label="Agent trace for item 0ca7bfac4994">
+    <div class="tl dim">api_round    in=2013  out=178   3164ms</div>
+    <div class="tl"><b>tool_call</b>    get_full_response      {"which": "a"}</div>
+    <div class="tl"><b>tool_call</b>    get_full_response      {"which": "b"}</div>
+    <div class="tl"><b>tool_call</b>    get_peer_judgments     {"item_id": "0ca7bfac4994"}</div>
+    <div class="tl dim">api_round    in=3114  out=63    1789ms</div>
+    <div class="tl"><b>tool_call</b>    get_annotator_history  {"annotator_id": "ann_05"}</div>
+    <div class="tl dim">api_round    in=4462  out=200   5348ms</div>
+    <div class="tl esc">escalation   "Critical misalignment between annotator's vote and justification. The annotator voted for Response A but the justification clearly argues for Response B&hellip;"</div>
+  </div>
+
+  <h2><span class="no">&sect; 6</span>What it provably does not catch</h2>
+  <ul class="inventory prose">
+    <li><strong>Position bias per-item &mdash; CLOSED by Layer 0.</strong> 10 of 18 biased-annotator items passed every per-item grader; annotator-level aggregation took it 22% &rarr; 100% for $0 (see the hill-climb table). Kept as the project's one completed loop: measured miss &rarr; named cause &rarr; shipped fix &rarr; number moved. <code>aggregates</code></li>
+    <li><strong>The agent under-flags what it could auto-reject.</strong> Five items the single call flagged outright were escalated instead &mdash; caught, but at human cost. <code>report --mode single|agent --defect RUSHED</code></li>
+    <li><strong>The verifier overturns correct rejects.</strong> "Do not rubber-stamp" produced overturns of true positives too. <code>report --mode verifier</code></li>
+    <li><strong>Budget-starved runs.</strong> 1.3% of agent runs hit the 6-call cap and verdicted on partial evidence &mdash; recorded, not retried. <code>trace --item-id &lt;id&gt;</code></li>
+    <li><strong>Defect rates below the pattern threshold.</strong> An annotator boilerplating 3 items in 10 defeats both the per-item graders and Layer 0's thresholds. Still the system's blind spot &mdash; named so it isn't mistaken for covered.</li>
+  </ul>
+
+  <div class="cta">
+    <span class="mono">code, tests &amp; full results: <a href="https://github.com/ahdithanu/second-reader">github.com/ahdithanu/second-reader</a></span>
+    <span class="mono">reproduce: <b>make run</b> &mdash; deterministic (seed 42), idempotent, resumable</span>
+  </div>
+  <footer>lmsys/mt_bench_human_judgments &middot; claude-sonnet-4-5 &middot; rubric_v1 stamped on every grade &middot; every API round logged with tokens, latency, cost &middot; Python / DuckDB / Polars / pydantic &middot; no web framework, by spec</footer>
+</div>
+
+</body>
+</html>
