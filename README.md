@@ -1,6 +1,6 @@
 # second-reader
 
-**Results at a glance:** [interactive readout](https://claude.ai/code/artifact/24eadfae-e6da-485a-9b6d-851a494a1c56) · full tables in [results/metrics.md](results/metrics.md)
+**Results at a glance:** [interactive readout](https://ahdithanu.github.io/second-reader/) · full tables in [results/metrics.md](results/metrics.md)
 
 Every large-scale human data operation has the same quiet problem: the people
 producing your training data are themselves a noisy process, and the QA layer
